@@ -7,13 +7,14 @@ plugins {
 
 android {
     namespace = "com.example.magnetic_survey_app"
-    compileSdk = 34  // use latest stable SDK
+    compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
     defaultConfig {
         applicationId = "com.example.magnetic_survey_app"
-        minSdk = 21          // v2 embedding requires >= 21
-        targetSdk = 34
+        // FIXED: Use proper syntax for minSdk
+        minSdk = flutter.minSdkVersion
+        targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         multiDexEnabled = true
@@ -30,7 +31,9 @@ android {
 
     buildTypes {
         release {
+            // FIXED: Remove resource shrinking to fix the build error
             isMinifyEnabled = false
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("debug")
         }
     }
@@ -39,7 +42,6 @@ android {
         viewBinding = true
     }
 }
-
 
 flutter {
     source = "../.."

@@ -30,6 +30,20 @@ class GridCell {
     this.notes,
   });
 
+  // ADDED: Computed property for completion percentage
+  double get completionPercentage {
+    switch (status) {
+      case GridCellStatus.notStarted:
+        return 0.0;
+      case GridCellStatus.inProgress:
+        // You can customize this logic based on your requirements
+        // For example, base it on pointCount vs target points
+        return pointCount >= 5 ? 90.0 : (pointCount * 20.0).clamp(0.0, 80.0);
+      case GridCellStatus.completed:
+        return 100.0;
+    }
+  }
+
   Map<String, dynamic> toMap() {
     return {
       'id': id,
@@ -65,4 +79,3 @@ class GridCell {
     );
   }
 }
-

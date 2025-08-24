@@ -1,3 +1,4 @@
+// lib/models/magnetic_reading.dart
 class MagneticReading {
   final int? id;
   final double latitude;
@@ -10,6 +11,10 @@ class MagneticReading {
   final DateTime timestamp;
   final String? notes;
   final int projectId;
+  
+  // ADDED: Missing properties that your code expects
+  final double accuracy; // GPS accuracy in meters
+  final double? heading; // Compass heading in degrees
 
   MagneticReading({
     this.id,
@@ -23,6 +28,9 @@ class MagneticReading {
     required this.timestamp,
     this.notes,
     required this.projectId,
+    // ADDED: Default values for new properties
+    this.accuracy = 5.0, // Default GPS accuracy
+    this.heading, // Optional compass heading
   });
 
   Map<String, dynamic> toMap() {
@@ -38,6 +46,9 @@ class MagneticReading {
       'timestamp': timestamp.toIso8601String(),
       'notes': notes,
       'projectId': projectId,
+      // ADDED: Include new properties in map
+      'accuracy': accuracy,
+      'heading': heading,
     };
   }
 
@@ -54,6 +65,9 @@ class MagneticReading {
       timestamp: DateTime.parse(map['timestamp']),
       notes: map['notes'],
       projectId: map['projectId'],
+      // ADDED: Handle new properties with defaults
+      accuracy: map['accuracy']?.toDouble() ?? 5.0,
+      heading: map['heading']?.toDouble(),
     );
   }
 }

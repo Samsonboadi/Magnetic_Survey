@@ -1,7 +1,8 @@
 // Top-level build file
 
 buildscript {
-    val kotlin_version by extra("1.9.0")
+    // UPDATED: Kotlin version to 2.1.0 to fix the warning
+    val kotlin_version by extra("2.1.0")
     repositories {
         google()
         mavenCentral()

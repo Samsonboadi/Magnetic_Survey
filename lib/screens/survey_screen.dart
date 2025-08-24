@@ -8,11 +8,13 @@ import 'package:flutter_compass/flutter_compass.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:io' as io show File; // Import for non-web platforms
-import 'dart:html' as html; // Import for web platforms
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/painting.dart' show FileImage;
+
+// CONDITIONAL IMPORTS - Only import for the platforms that support them
+import 'dart:io' as io show File; // Only available on mobile/desktop
+// REMOVED: import 'dart:html' as html; - This should only be imported conditionally
 
 import '../models/magnetic_reading.dart';
 import '../models/survey_project.dart';
@@ -925,129 +927,133 @@ void _createSampleGrid() {
     );
   }
 
-  Widget _buildMapView() {
-    return Stack(
-      children: [
-        FlutterMap(
-          mapController: _mapController,
-          options: MapOptions(
-            center: _currentPosition != null 
-                ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
-                : LatLng(5.6037, -0.1870),
-            zoom: 18.0,
-            maxZoom: 20.0,
-            minZoom: 10.0,
-          ),
-          children: [
-            // Base map layer
-            _buildBaseMapLayer(),
-            
-            // Grid overlay with reduced opacity so base layer shows through
-            if (_showGrid)
-              PolygonLayer(
-                polygons: _gridCells.map((cell) => Polygon(
-                  points: cell.bounds,
-                  color: _getCellColor(cell.status).withOpacity(0.2),
-                  borderColor: _getCellColor(cell.status),
-                  borderStrokeWidth: 2.0,
-                )).toList(),
-              ),
-            
-            // Previous survey points (from saved data)
-            if (_savedReadings.isNotEmpty)
-              CircleLayer(
-                circles: _savedReadings.map((reading) => CircleMarker(
-                  point: LatLng(reading.latitude, reading.longitude),
-                  radius: 3,
-                  color: Colors.blue,
-                  borderColor: Colors.white,
-                  borderStrokeWidth: 1,
-                )).toList(),
-              ),
-            
-            // Current session points
+Widget _buildMapView() {
+  return Stack(
+    children: [
+      FlutterMap(
+        mapController: _mapController,
+        options: MapOptions(
+          // FIXED: Changed 'center' to 'initialCenter'
+          initialCenter: _currentPosition != null 
+              ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+              : LatLng(5.6037, -0.1870),
+          // FIXED: Changed 'zoom' to 'initialZoom' 
+          initialZoom: 18.0,
+          maxZoom: 20.0,
+          minZoom: 10.0,
+          // REMOVED: backgroundColor is no longer supported in MapOptions
+          // Use Container wrapper instead if needed
+        ),
+        children: [
+          // Your existing map layers...
+          _buildBaseMapLayer(),
+          
+          // Rest of your map layers remain the same
+          if (_showGrid)
+            PolygonLayer(
+              polygons: _gridCells.map((cell) => Polygon(
+                points: cell.bounds,
+                color: _getCellColor(cell.status).withOpacity(0.2),
+                borderColor: _getCellColor(cell.status),
+                borderStrokeWidth: 2.0,
+              )).toList(),
+            ),
+          
+          // Previous survey points
+          if (_savedReadings.isNotEmpty)
             CircleLayer(
-              circles: _collectedPoints.map((point) => CircleMarker(
-                point: point,
-                radius: 4,
-                color: Colors.green,
+              circles: _savedReadings.map((reading) => CircleMarker(
+                point: LatLng(reading.latitude, reading.longitude),
+                radius: 3,
+                color: Colors.blue,
                 borderColor: Colors.white,
                 borderStrokeWidth: 1,
               )).toList(),
             ),
-            
-            // Team members positions
-            if (_showTeamMembers && _isTeamMode)
-              MarkerLayer(
-                markers: _teamMembers
-                    .where((member) => member.currentPosition != null && member.id != _teamService.currentUserId)
-                    .map((member) => Marker(
-                      point: member.currentPosition!,
-                      width: 25,
-                      height: 25,
-                      child: Transform.rotate(
-                        angle: (member.heading ?? 0) * math.pi / 180,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: member.markerColor,
-                            shape: BoxShape.circle,
-                            border: Border.all(color: Colors.white, width: 2),
-                          ),
-                          child: Icon(Icons.person, color: Colors.white, size: 16),
-                        ),
-                      ),
-                    )).toList(),
-              ),
-            
-            // Current position with heading
-            if (_currentPosition != null)
-              MarkerLayer(
-                markers: [
-                  Marker(
-                    point: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-                    width: 30,
-                    height: 30,
+          
+          // Current session points
+          CircleLayer(
+            circles: _collectedPoints.map((point) => CircleMarker(
+              point: point,
+              radius: 4,
+              color: Colors.green,
+              borderColor: Colors.white,
+              borderStrokeWidth: 1,
+            )).toList(),
+          ),
+          
+          // Team members positions
+          if (_showTeamMembers && _isTeamMode)
+            MarkerLayer(
+              markers: _teamMembers
+                  .where((member) => member.currentPosition != null && member.id != _teamService.currentUserId)
+                  .map((member) => Marker(
+                    point: member.currentPosition!,
+                    width: 25,
+                    height: 25,
                     child: Transform.rotate(
-                      angle: (_heading ?? 0) * math.pi / 180,
+                      angle: (member.heading ?? 0) * math.pi / 180,
                       child: Container(
                         decoration: BoxDecoration(
-                          color: _isGpsCalibrated ? Colors.blue : Colors.orange,
+                          color: member.markerColor,
                           shape: BoxShape.circle,
                           border: Border.all(color: Colors.white, width: 2),
                         ),
-                        child: Icon(Icons.navigation, color: Colors.white),
+                        child: Icon(Icons.person, color: Colors.white, size: 16),
                       ),
                     ),
-                  ),
-                ],
-              ),
-          ],
-        ),
-        
-        // Compass overlay
-        if (_showCompass && _heading != null)
-          Positioned(
-            top: 16,
-            right: 16,
-            child: _buildCompassWidget(),
-          ),
+                  )).toList(),
+            ),
           
-        // GPS status indicator
+          // Current position with heading
+          if (_currentPosition != null)
+            MarkerLayer(
+              markers: [
+                Marker(
+                  point: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+                  width: 30,
+                  height: 30,
+                  child: Transform.rotate(
+                    angle: (_heading ?? 0) * math.pi / 180,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: _isGpsCalibrated ? Colors.green : Colors.orange,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 2),
+                      ),
+                      child: Icon(Icons.navigation, color: Colors.white, size: 20),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
+      
+      // Compass overlay
+      if (_showCompass)
         Positioned(
           top: 16,
-          left: 16,
-          child: _buildGpsStatusWidget(),
+          right: 16,
+          child: _buildCompassWidget(),
         ),
-
-        // Calibration status indicator
-        Positioned(
-          bottom: 16,
-          left: 16,
-          child: _buildCalibrationStatusWidget(),
-        ),
-      ],
-    );
-  }
+        
+      // GPS status
+      Positioned(
+        bottom: 16,
+        right: 16,
+        child: _buildGpsStatusWidget(),
+      ),
+      
+      // ADDED: Calibration status indicator that was missing
+      Positioned(
+        bottom: 16,
+        left: 16,
+        child: _buildCalibrationStatusWidget(),
+      ),
+    ],
+  );
+}
 
   Widget _buildBaseMapLayer() {
     switch (_currentBaseLayer) {
@@ -1065,7 +1071,7 @@ void _createSampleGrid() {
         return TileLayer(
           urlTemplate: 'https://geocloud.radiantearth.io/api/v1/mosaic/emag2-magnetic-anomaly/tiles/{z}/{x}/{y}.png',
           userAgentPackageName: 'com.example.magnetic_survey_app',
-          backgroundColor: Colors.transparent,
+          //backgroundColor: Colors.transparent,
         );
     }
   }
