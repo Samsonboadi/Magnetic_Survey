@@ -1,0 +1,59 @@
+name: magnetic_survey_app
+description: TerraMag Field - Professional magnetic survey data collection
+
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # Core functionality
+  geolocator: ^10.1.0
+  sensors_plus: ^4.0.2
+  permission_handler: ^11.3.1
+  
+  # Database
+  sqflite: ^2.3.2
+  path_provider: ^2.1.2
+  path: ^1.8.3
+  
+  # Maps and Navigation
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.0
+  flutter_compass: ^0.7.0
+  
+  # File handling and sharing
+  file_picker: ^8.0.3
+  share_plus: ^7.2.2
+  csv: ^5.1.1
+  
+  # UI and utilities
+  cupertino_icons: ^1.0.6
+  vector_math: ^2.1.4
+  
+  # Additional features we just implemented
+  # Note: Some of these might need to be added manually
+  
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  
+  # You can add app icons and custom assets here
+  # assets:
+  #   - images/
+  #   - icons/
+  
+  # Custom fonts (optional)
+  # fonts:
+  #   - family: Custom
+  #     fonts:
+  #       - asset: fonts/Custom-Regular.ttf
