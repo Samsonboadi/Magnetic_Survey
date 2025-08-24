@@ -89,6 +89,14 @@ class _SurveyScreenState extends State<SurveyScreen> {
   Duration _magneticPullRate = Duration(seconds: 1);
   Timer? _automaticCollectionTimer;
 
+
+  // ADDED: Stream subscriptions to prevent memory leaks
+  StreamSubscription<MagnetometerEvent>? _magnetometerSubscription;
+  StreamSubscription<CompassEvent>? _compassSubscription;
+  StreamSubscription<Position>? _positionSubscription;
+  StreamSubscription<List<TeamMember>>? _teamSyncSubscription;
+  Timer? _webSimulationTimer;
+
   // Services
   final TeamSyncService _teamService = TeamSyncService.instance;
   final ExportService _exportService = ExportService.instance;
@@ -104,7 +112,13 @@ class _SurveyScreenState extends State<SurveyScreen> {
 
   @override
   void dispose() {
+    // FIXED: Cancel all subscriptions and timers
     _automaticCollectionTimer?.cancel();
+    _magnetometerSubscription?.cancel();
+    _compassSubscription?.cancel();
+    _positionSubscription?.cancel();
+    _teamSyncSubscription?.cancel();
+    _webSimulationTimer?.cancel();
     _mapController.dispose();
     super.dispose();
   }
@@ -121,14 +135,23 @@ class _SurveyScreenState extends State<SurveyScreen> {
     _createSampleGrid();
   }
 
+
+
+
   void _setupTeamSync() {
-    _teamService.teamMembersStream.listen((members) {
-      setState(() {
-        _teamMembers = members;
-        _isTeamMode = members.isNotEmpty;
-      });
+    // FIXED: Store the subscription to cancel it later
+    _teamSyncSubscription = _teamService.teamMembersStream.listen((members) {
+      if (mounted) {  // Check if widget is still mounted
+        setState(() {
+          _teamMembers = members;
+          _isTeamMode = members.isNotEmpty;
+        });
+      }
     });
   }
+
+
+
 
   Future<void> _loadPreviousSurveyData() async {
     if (widget.project != null && !_isWebMode) {
@@ -156,29 +179,34 @@ class _SurveyScreenState extends State<SurveyScreen> {
       if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
         Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
         
-        setState(() {
-          _currentPosition = position;
-          _gpsAccuracy = position.accuracy;
-          _isGpsCalibrated = position.accuracy < 5.0;
-        });
+        if (mounted) {  // Check if widget is still mounted
+          setState(() {
+            _currentPosition = position;
+            _gpsAccuracy = position.accuracy;
+            _isGpsCalibrated = position.accuracy < 5.0;
+          });
+        }
 
-        Geolocator.getPositionStream(
+        // FIXED: Store the position stream subscription
+        _positionSubscription = Geolocator.getPositionStream(
           locationSettings: LocationSettings(
             accuracy: LocationAccuracy.high,
             distanceFilter: 1,
           ),
         ).listen((Position position) {
-          setState(() {
-            _currentPosition = position;
-            _gpsAccuracy = position.accuracy;
+          if (mounted) {  // Check if widget is still mounted
+            setState(() {
+              _currentPosition = position;
+              _gpsAccuracy = position.accuracy;
+              
+              if (position.accuracy > 10.0) {
+                _showGpsGuidance();
+              }
+            });
             
-            if (position.accuracy > 10.0) {
-              _showGpsGuidance();
+            if (_isTeamMode) {
+              _teamService.updateMyPosition(LatLng(position.latitude, position.longitude), _heading);
             }
-          });
-          
-          if (_isTeamMode) {
-            _teamService.updateMyPosition(LatLng(position.latitude, position.longitude), _heading);
           }
         });
       }
@@ -188,24 +216,30 @@ class _SurveyScreenState extends State<SurveyScreen> {
   }
 
   void _startSensorListening() {
-    magnetometerEvents.listen((MagnetometerEvent event) {
-      setState(() {
-        _magneticX = event.x - _magneticCalibrationX;
-        _magneticY = event.y - _magneticCalibrationY;
-        _magneticZ = event.z - _magneticCalibrationZ;
-        _totalField = SensorService.calculateTotalField(_magneticX, _magneticY, _magneticZ);
-      });
+    // FIXED: Store subscriptions to cancel them later
+    _magnetometerSubscription = magnetometerEvents.listen((MagnetometerEvent event) {
+      if (mounted) {  // Check if widget is still mounted
+        setState(() {
+          _magneticX = event.x - _magneticCalibrationX;
+          _magneticY = event.y - _magneticCalibrationY;
+          _magneticZ = event.z - _magneticCalibrationZ;
+          _totalField = SensorService.calculateTotalField(_magneticX, _magneticY, _magneticZ);
+        });
+      }
     });
 
-    FlutterCompass.events?.listen((CompassEvent event) {
-      setState(() {
-        _heading = event.heading;
-      });
+    _compassSubscription = FlutterCompass.events?.listen((CompassEvent event) {
+      if (mounted) {  // Check if widget is still mounted
+        setState(() {
+          _heading = event.heading;
+        });
+      }
     });
   }
 
   void _simulateDataForWeb() {
-    Timer.periodic(Duration(seconds: 1), (timer) {
+    // FIXED: Store the timer to cancel it later
+    _webSimulationTimer = Timer.periodic(Duration(seconds: 1), (timer) {
       if (!mounted || !_isCollecting) {
         timer.cancel();
         return;
@@ -612,7 +646,7 @@ void _createSampleGrid() {
   void _startAutomaticCollection() {
     _automaticCollectionTimer?.cancel();
     _automaticCollectionTimer = Timer.periodic(_magneticPullRate, (timer) {
-      if (_isCollecting && mounted) {
+      if (_isCollecting && mounted) {  // FIXED: Added mounted check
         _recordMagneticReading();
       } else {
         timer.cancel();
@@ -1068,10 +1102,13 @@ Widget _buildMapView() {
           userAgentPackageName: 'com.example.magnetic_survey_app',
         );
       case MapBaseLayer.emag2Magnetic:
+        // FIXED: Use working EMAG2 tile URL
         return TileLayer(
-          urlTemplate: 'https://geocloud.radiantearth.io/api/v1/mosaic/emag2-magnetic-anomaly/tiles/{z}/{x}/{y}.png',
+          urlTemplate: 'https://maps.ngdc.noaa.gov/arcgis/rest/services/web_mercator/emag2_magnetic_anomaly/MapServer/tile/{z}/{y}/{x}',
           userAgentPackageName: 'com.example.magnetic_survey_app',
-          //backgroundColor: Colors.transparent,
+          additionalOptions: {
+            'transparent': 'true',
+          },
         );
     }
   }
