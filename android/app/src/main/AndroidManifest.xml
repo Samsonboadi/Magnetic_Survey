@@ -14,6 +14,22 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     
+    <!-- MOVED: Queries elements should be at manifest level, not inside application -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT" />
+            <data android:mimeType="text/plain" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+    </queries>
+    
     <application
         android:label="TerraMag Field"
         android:name="${applicationName}"
@@ -41,7 +57,7 @@
             </intent-filter>
         </activity>
         
-        <!-- File provider for camera functionality -->
+        <!-- File provider for camera functionality (re-enable after fixing XML) -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -52,24 +68,5 @@
                 android:resource="@xml/file_paths" />
         </provider>
         
-        <!-- Required to query activities that can process text -->
-        <queries>
-            <intent>
-                <action android:name="android.intent.action.PROCESS_TEXT" />
-                <data android:mimeType="text/plain" />
-            </intent>
-        </queries>
     </application>
-
-    <!-- Required to query activities that can handle the ACTION_VIEW intent -->
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="https" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="http" />
-        </intent>
-    </queries>
 </manifest>
