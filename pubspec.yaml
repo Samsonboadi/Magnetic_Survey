@@ -11,49 +11,49 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  
+
   # Core functionality
-  geolocator: ^10.1.0
-  sensors_plus: ^4.0.2
-  permission_handler: ^11.3.1
-  
+  geolocator: ^14.0.2
+  geolocator_android: ^5.0.2
+  sensors_plus: ^6.1.2
+  sensors_plus_platform_interface: ^2.0.1
+  permission_handler: ^12.0.1
+  permission_handler_android: ^13.0.1
+
   # Database
   sqflite: ^2.3.2
   path_provider: ^2.1.2
   path: ^1.8.3
-  
+
   # Maps and Navigation
-  flutter_map: ^6.1.0
+  flutter_map: ^8.2.1
   latlong2: ^0.9.0
-  flutter_compass: ^0.7.0
-  
+  flutter_compass: ^0.8.1
+
+  # Camera and Media
+  image_picker: ^1.0.4
+  camera: ^0.11.2
+  camera_android_camerax: ^0.6.19+1
+
   # File handling and sharing
-  file_picker: ^8.0.3
-  share_plus: ^7.2.2
-  csv: ^5.1.1
-  
+  file_picker: ^10.3.2
+  share_plus: ^11.1.0
+  share_plus_platform_interface: ^6.1.0
+  csv: ^6.0.0
+
   # UI and utilities
   cupertino_icons: ^1.0.6
   vector_math: ^2.1.4
-  
-  # Additional features we just implemented
-  # Note: Some of these might need to be added manually
-  
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^3.0.0
+  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true
-  
-  # You can add app icons and custom assets here
+
+  # Add any custom assets here
   # assets:
   #   - images/
   #   - icons/
-  
-  # Custom fonts (optional)
-  # fonts:
-  #   - family: Custom
-  #     fonts:
-  #       - asset: fonts/Custom-Regular.ttf

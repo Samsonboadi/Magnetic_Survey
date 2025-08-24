@@ -1,11 +1,12 @@
+// lib/models/field_note.dart
 class FieldNote {
   final int? id;
   final double latitude;
   final double longitude;
   final String note;
-  final DateTime timestamp;
-  final String? audioPath;
   final String? imagePath;
+  final String? audioPath;
+  final DateTime timestamp;
   final int projectId;
 
   FieldNote({
@@ -13,9 +14,9 @@ class FieldNote {
     required this.latitude,
     required this.longitude,
     required this.note,
-    required this.timestamp,
-    this.audioPath,
     this.imagePath,
+    this.audioPath,
+    required this.timestamp,
     required this.projectId,
   });
 
@@ -25,9 +26,9 @@ class FieldNote {
       'latitude': latitude,
       'longitude': longitude,
       'note': note,
-      'timestamp': timestamp.toIso8601String(),
-      'audioPath': audioPath,
       'imagePath': imagePath,
+      'audioPath': audioPath,
+      'timestamp': timestamp.toIso8601String(),
       'projectId': projectId,
     };
   }
@@ -38,9 +39,9 @@ class FieldNote {
       latitude: map['latitude'],
       longitude: map['longitude'],
       note: map['note'],
-      timestamp: DateTime.parse(map['timestamp']),
-      audioPath: map['audioPath'],
       imagePath: map['imagePath'],
+      audioPath: map['audioPath'],
+      timestamp: DateTime.parse(map['timestamp']),
       projectId: map['projectId'],
     );
   }

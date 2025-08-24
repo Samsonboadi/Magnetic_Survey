@@ -1,7 +1,10 @@
+// lib/services/database_service.dart
+import 'dart:async';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
-import '../models/magnetic_reading.dart';
 import '../models/survey_project.dart';
+import '../models/magnetic_reading.dart';
+import '../models/field_note.dart';
 
 class DatabaseService {
   static final DatabaseService instance = DatabaseService._init();
@@ -19,21 +22,28 @@ class DatabaseService {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
 
-    return await openDatabase(path, version: 1, onCreate: _createDB);
+    return await openDatabase(
+      path,
+      version: 2,
+      onCreate: _createDB,
+      onUpgrade: _upgradeDB,
+    );
   }
 
-  Future _createDB(Database db, int version) async {
+  Future<void> _createDB(Database db, int version) async {
+    // Projects table
     await db.execute('''
       CREATE TABLE projects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         description TEXT,
         createdAt TEXT NOT NULL,
-        gridSpacing REAL,
-        gridBounds TEXT
+        gridSpacing REAL DEFAULT 10.0,
+        boundaryPoints TEXT
       )
     ''');
 
+    // Magnetic readings table
     await db.execute('''
       CREATE TABLE magnetic_readings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,12 +61,45 @@ class DatabaseService {
       )
     ''');
 
-    // Create a default project
-    await db.insert('projects', {
-      'name': 'Default Survey',
-      'description': 'Default magnetic survey project',
-      'createdAt': DateTime.now().toIso8601String(),
-    });
+    // Field notes table
+    await db.execute('''
+      CREATE TABLE field_notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        latitude REAL NOT NULL,
+        longitude REAL NOT NULL,
+        note TEXT NOT NULL,
+        imagePath TEXT,
+        audioPath TEXT,
+        timestamp TEXT NOT NULL,
+        projectId INTEGER NOT NULL,
+        FOREIGN KEY (projectId) REFERENCES projects (id) ON DELETE CASCADE
+      )
+    ''');
+
+    // Create indexes for better performance
+    await db.execute('CREATE INDEX idx_magnetic_project ON magnetic_readings(projectId)');
+    await db.execute('CREATE INDEX idx_magnetic_timestamp ON magnetic_readings(timestamp)');
+    await db.execute('CREATE INDEX idx_field_notes_project ON field_notes(projectId)');
+  }
+
+  Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // Add field notes table if upgrading from version 1
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS field_notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          latitude REAL NOT NULL,
+          longitude REAL NOT NULL,
+          note TEXT NOT NULL,
+          imagePath TEXT,
+          audioPath TEXT,
+          timestamp TEXT NOT NULL,
+          projectId INTEGER NOT NULL,
+          FOREIGN KEY (projectId) REFERENCES projects (id) ON DELETE CASCADE
+        )
+      ''');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_field_notes_project ON field_notes(projectId)');
+    }
   }
 
   // Project operations
@@ -115,10 +158,33 @@ class DatabaseService {
     return Sqflite.firstIntValue(result) ?? 0;
   }
 
+  // Field notes operations
+  Future<int> insertFieldNote(FieldNote fieldNote) async {
+    final db = await instance.database;
+    return await db.insert('field_notes', fieldNote.toMap());
+  }
+
+  Future<List<FieldNote>> getFieldNotesForProject(int projectId) async {
+    final db = await instance.database;
+    final result = await db.query(
+      'field_notes',
+      where: 'projectId = ?',
+      whereArgs: [projectId],
+      orderBy: 'timestamp ASC',
+    );
+    return result.map((map) => FieldNote.fromMap(map)).toList();
+  }
+
+  Future<void> deleteFieldNote(int id) async {
+    final db = await instance.database;
+    await db.delete('field_notes', where: 'id = ?', whereArgs: [id]);
+  }
+
   // Export functions
   Future<String> exportProjectToCSV(int projectId) async {
     final readings = await getReadingsForProject(projectId);
     final project = await getProject(projectId);
+    final fieldNotes = await getFieldNotesForProject(projectId);
     
     StringBuffer csv = StringBuffer();
     csv.writeln('# TerraMag Field - Magnetic Survey Data Export');
@@ -148,7 +214,7 @@ class DatabaseService {
   }
 
   Future<void> initDatabase() async {
-    await database; // This will initialize the database
+    await database;
   }
 
   Future<void> close() async {
