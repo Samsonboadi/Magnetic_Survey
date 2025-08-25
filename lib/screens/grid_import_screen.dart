@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:geolocator/geolocator.dart';
 import 'dart:convert';
 import 'dart:math' as math;
+import '../models/survey_project.dart';
 
 import 'grid_creation_map_screen.dart';
 import 'survey_screen.dart';
@@ -18,11 +20,39 @@ class GridImportScreen extends StatefulWidget {
 class _GridImportScreenState extends State<GridImportScreen> {
   List<GridFile> _importedGrids = [];
   bool _isLoading = false;
+  Position? _currentPosition;
 
   @override
   void initState() {
     super.initState();
     _loadSavedGrids();
+    _initializeLocation();
+  }
+
+  // Initialize location for grid center detection
+  Future<void> _initializeLocation() async {
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.whileInUse || 
+          permission == LocationPermission.always) {
+        Position position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 5),
+        );
+        
+        if (mounted) {
+          setState(() {
+            _currentPosition = position;
+          });
+        }
+      }
+    } catch (e) {
+      print('Location initialization error: $e');
+    }
   }
 
   // ==================== GRID PERSISTENCE ====================
@@ -395,10 +425,18 @@ class _GridImportScreenState extends State<GridImportScreen> {
                 // Convert GridFile to actual GridCells for survey
                 List<GridCell> surveyGrid = _convertToGridCells(grid);
                 
-                // Navigate to survey screen with the grid
+                // CREATE A TEMPORARY PROJECT FOR THE SURVEY
+                SurveyProject tempProject = SurveyProject(
+                  name: 'Survey: ${grid.name}',
+                  description: 'Grid-based survey session',
+                  createdAt: DateTime.now(),
+                );
+                
+                // Navigate to survey screen with the grid AND project
                 await navigator.pushReplacement(
                   MaterialPageRoute(
                     builder: (context) => SurveyScreen(
+                      project: tempProject,           // ADD THIS
                       initialGridCells: surveyGrid,
                       gridCenter: _calculateGridCenter(surveyGrid),
                     ),
@@ -598,6 +636,8 @@ class _GridImportScreenState extends State<GridImportScreen> {
                     rows: rows,
                     cols: cols,
                     imported: grid.imported,
+                    centerLat: grid.centerLat, // Preserve center coordinates
+                    centerLon: grid.centerLon, // Preserve center coordinates
                   );
                 });
                 
@@ -755,6 +795,8 @@ class _GridImportScreenState extends State<GridImportScreen> {
         rows: result['rows'],
         cols: result['cols'],
         imported: DateTime.now(),
+        centerLat: result['centerLat'], // Store center coordinates
+        centerLon: result['centerLon'], // Store center coordinates
       );
 
       setState(() {
@@ -876,6 +918,14 @@ class _GridImportScreenState extends State<GridImportScreen> {
     final linesValue = int.tryParse(lines) ?? 7;
     final gridPoints = linesValue * linesValue;
     
+    // Use current location for quick create grids
+    double? centerLat;
+    double? centerLon;
+    if (_currentPosition != null) {
+      centerLat = _currentPosition!.latitude;
+      centerLon = _currentPosition!.longitude;
+    }
+    
     final newGrid = GridFile(
       name: gridName,
       type: 'CUSTOM',
@@ -885,6 +935,8 @@ class _GridImportScreenState extends State<GridImportScreen> {
       rows: linesValue,
       cols: linesValue,
       imported: DateTime.now(),
+      centerLat: centerLat, // Store current location as center
+      centerLon: centerLon, // Store current location as center
     );
     
     setState(() {
@@ -908,8 +960,8 @@ class _GridImportScreenState extends State<GridImportScreen> {
   List<GridCell> _convertToGridCells(GridFile grid) {
     List<GridCell> cells = [];
     
-    // Use default center location (can be improved with actual location)
-    LatLng center = LatLng(5.6037, -0.1870); // Default fallback
+    // FIX: Use intelligent grid center detection
+    LatLng center = _getGridCenter(grid);
     
     if (grid.rows != null && grid.cols != null && grid.spacing != null) {
       double cellSize = grid.spacing! / 111000; // Convert meters to degrees (rough approximation)
@@ -947,8 +999,60 @@ class _GridImportScreenState extends State<GridImportScreen> {
     return cells;
   }
 
+  LatLng _getGridCenter(GridFile grid) {
+    // Priority 1: If grid has stored center coordinates (for MAP type grids)
+    if (grid.centerLat != null && grid.centerLon != null) {
+      return LatLng(grid.centerLat!, grid.centerLon!);
+    }
+    
+    // Priority 2: Try to get user's current location
+    if (_currentPosition != null) {
+      return LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
+    }
+    
+    // Priority 3: Try to estimate from timezone (rough approximation)
+    try {
+      final timeZone = DateTime.now().timeZoneOffset;
+      final offsetHours = timeZone.inHours;
+      
+      // Rough timezone to longitude mapping
+      double approximateLongitude = offsetHours * 15.0;
+      
+      // Use a reasonable latitude based on common survey areas
+      double approximateLatitude = 0.0; // Default to equator
+      
+      // Better regional approximations based on timezone
+      if (offsetHours >= 8 && offsetHours <= 11) {
+        // Asia-Pacific region
+        approximateLatitude = -25.0; // Australia/Southern Asia
+      } else if (offsetHours >= -8 && offsetHours <= -5) {
+        // North America
+        approximateLatitude = 40.0;
+      } else if (offsetHours >= -1 && offsetHours <= 3) {
+        // Europe/Africa
+        approximateLatitude = 50.0; // Europe
+      }
+      
+      return LatLng(approximateLatitude, approximateLongitude.clamp(-180.0, 180.0));
+    } catch (e) {
+      print('Timezone estimation failed: $e');
+    }
+    
+    // Priority 4: Last resort - but NOT Ghana! Use center of world
+    return LatLng(0.0, 0.0);
+  }
+
   LatLng _calculateGridCenter(List<GridCell> cells) {
-    if (cells.isEmpty) return LatLng(5.6037, -0.1870);
+    if (cells.isEmpty) {
+      // Don't default to Ghana! Use intelligent fallback
+      return _getGridCenter(GridFile(
+        name: 'temp',
+        type: 'temp', 
+        size: '0',
+        points: 0,
+        imported: DateTime.now(),
+      ));
+    }
     
     double totalLat = 0;
     double totalLon = 0;
@@ -1030,6 +1134,8 @@ class GridFile {
   final double? spacing;
   final int? rows;
   final int? cols;
+  final double? centerLat;
+  final double? centerLon;
 
   GridFile({
     required this.name,
@@ -1040,6 +1146,8 @@ class GridFile {
     this.spacing,
     this.rows,
     this.cols,
+    this.centerLat,
+    this.centerLon,
   });
 
   // JSON serialization for persistence
@@ -1053,6 +1161,8 @@ class GridFile {
       'spacing': spacing,
       'rows': rows,
       'cols': cols,
+      'centerLat': centerLat,
+      'centerLon': centerLon,
     };
   }
 
@@ -1066,6 +1176,8 @@ class GridFile {
       spacing: json['spacing']?.toDouble(),
       rows: json['rows'],
       cols: json['cols'],
+      centerLat: json['centerLat']?.toDouble(),
+      centerLon: json['centerLon']?.toDouble(),
     );
   }
 
@@ -1079,6 +1191,8 @@ class GridFile {
     double? spacing,
     int? rows,
     int? cols,
+    double? centerLat,
+    double? centerLon,
   }) {
     return GridFile(
       name: name ?? this.name,
@@ -1089,6 +1203,8 @@ class GridFile {
       spacing: spacing ?? this.spacing,
       rows: rows ?? this.rows,
       cols: cols ?? this.cols,
+      centerLat: centerLat ?? this.centerLat,
+      centerLon: centerLon ?? this.centerLon,
     );
   }
 

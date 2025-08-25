@@ -187,7 +187,7 @@ class _GridCreationMapScreenState extends State<GridCreationMapScreen> {
       return;
     }
     
-    // Create a simplified grid data structure to return
+    // FIX: Include the grid center coordinates for proper storage
     final gridData = {
       'name': _gridNameController.text.trim(),
       'spacing': double.tryParse(_spacingController.text) ?? 10.0,
@@ -196,6 +196,8 @@ class _GridCreationMapScreenState extends State<GridCreationMapScreen> {
       'center': _gridCenter,
       'points': _previewGrid.length,
       'cells': _previewGrid,
+      'centerLat': _gridCenter?.latitude,  // ADD THIS
+      'centerLon': _gridCenter?.longitude, // ADD THIS
     };
     
     Navigator.pop(context, gridData);
