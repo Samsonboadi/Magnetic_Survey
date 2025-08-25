@@ -1,9 +1,12 @@
+// COMPLETE CORRECTED project_manager_screen.dart
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:share_plus/share_plus.dart';
 import '../models/survey_project.dart';
 import '../models/magnetic_reading.dart';
 import '../services/database_service.dart';
+import '../services/export_service.dart'; // ADD THIS IMPORT
 import 'survey_screen.dart';
 
 class ProjectManagerScreen extends StatefulWidget {
@@ -78,6 +81,11 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
         backgroundColor: Colors.blue[800],
         foregroundColor: Colors.white,
         actions: [
+          IconButton(
+            icon: Icon(Icons.download),
+            onPressed: _exportAllProjects,
+            tooltip: 'Export All Projects',
+          ),
           IconButton(
             icon: Icon(Icons.refresh),
             onPressed: _loadProjects,
@@ -337,28 +345,337 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
     }
   }
 
+  // ENHANCED: Individual project export with multiple format options
   Future<void> _exportProject(SurveyProject project) async {
-    try {
-      if (kIsWeb) {
-        // Demo export for web
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Demo: Export functionality available on mobile devices')),
-        );
-        return;
-      }
-
-      final csvData = await DatabaseService.instance.exportProjectToCSV(project.id!);
-      
-      // For now, just share the CSV data
-      await Share.share(
-        csvData,
-        subject: 'Magnetic Survey Data - ${project.name}',
+    if (kIsWeb) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Demo: Export functionality available on mobile devices')),
       );
+      return;
+    }
+
+    // Show format selection dialog
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.download, color: Colors.blue),
+            SizedBox(width: 8),
+            Text('Export ${project.name}'),
+          ],
+        ),
+        content: Container(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Choose export format:'),
+              SizedBox(height: 16),
+              Row(
+                children: [
+                  Icon(Icons.info, size: 16, color: Colors.blue),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Readings: ${_projectReadingCounts[project.id] ?? 0}',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: 16),
+              // Export format buttons
+              _buildProjectExportButton(project, ExportFormat.csv, Icons.table_chart, Colors.green),
+              SizedBox(height: 8),
+              _buildProjectExportButton(project, ExportFormat.geojson, Icons.map, Colors.blue),
+              SizedBox(height: 8),
+              _buildProjectExportButton(project, ExportFormat.kml, Icons.public, Colors.orange),
+              if (!kIsWeb) SizedBox(height: 8),
+              if (!kIsWeb) _buildProjectExportButton(project, ExportFormat.sqlite, Icons.storage, Colors.purple),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProjectExportButton(SurveyProject project, ExportFormat format, IconData icon, Color color) {
+    return Container(
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        onPressed: () => _performProjectExport(project, format),
+        icon: Icon(icon),
+        label: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(_getFormatDisplayName(format)),
+            Text(
+              _getFormatDescription(format),
+              style: TextStyle(fontSize: 10),
+            ),
+          ],
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: color,
+          foregroundColor: Colors.white,
+          padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _performProjectExport(SurveyProject project, ExportFormat format) async {
+    Navigator.pop(context); // Close format selection dialog
+    
+    try {
+      // Show loading dialog
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Exporting ${project.name}...'),
+              SizedBox(height: 8),
+              Text(
+                'Format: ${_getFormatDisplayName(format)}',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      if (format == ExportFormat.csv) {
+        // Use existing CSV export method
+        final csvData = await DatabaseService.instance.exportProjectToCSV(project.id!);
+        
+        Navigator.pop(context); // Close loading dialog
+        
+        await Share.share(
+          csvData,
+          subject: 'Magnetic Survey Data - ${project.name}',
+        );
+      } else {
+        // Use ExportService for other formats
+        final readings = await DatabaseService.instance.getReadingsForProject(project.id!);
+        final fieldNotes = await DatabaseService.instance.getFieldNotesForProject(project.id!);
+        
+        String exportData = await ExportService.instance.exportProject(
+          project: project,
+          readings: readings,
+          gridCells: [], // No grid cells from project manager
+          fieldNotes: fieldNotes,
+          format: format,
+        );
+        
+        Navigator.pop(context); // Close loading dialog
+        
+        // Generate filename
+        String extension = ExportService.instance.getFileExtension(format);
+        String filename = '${project.name}_${DateTime.now().millisecondsSinceEpoch}$extension';
+        
+        await ExportService.instance.saveAndShare(
+          data: exportData,
+          filename: filename,
+          mimeType: ExportService.instance.getMimeType(format),
+        );
+      }
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Data exported successfully!')),
       );
     } catch (e) {
+      // Close loading dialog if still open
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Export failed: $e')),
+      );
+    }
+  }
+
+  // ENHANCED: Bulk export with all format options
+  Future<void> _exportAllProjects() async {
+    if (_projects.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No projects to export')),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.download, color: Colors.blue),
+            SizedBox(width: 8),
+            Text('Export All Projects'),
+          ],
+        ),
+        content: Container(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Export data from all ${_projects.length} projects:'),
+              SizedBox(height: 16),
+              Row(
+                children: [
+                  Icon(Icons.info, size: 16, color: Colors.blue),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Total readings: ${_projectReadingCounts.values.fold(0, (sum, count) => sum + count)}',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: 16),
+              // Export format options for bulk export
+              _buildBulkExportButton(ExportFormat.csv, Icons.table_chart, Colors.green),
+              SizedBox(height: 8),
+              _buildBulkExportButton(ExportFormat.geojson, Icons.map, Colors.blue),
+              SizedBox(height: 8),
+              _buildBulkExportButton(ExportFormat.kml, Icons.public, Colors.orange),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBulkExportButton(ExportFormat format, IconData icon, Color color) {
+    return Container(
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        onPressed: () => _performBulkExport(format),
+        icon: Icon(icon),
+        label: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(_getFormatDisplayName(format)),
+            Text(
+              'Export all projects in ${_getFormatDisplayName(format)} format',
+              style: TextStyle(fontSize: 10),
+            ),
+          ],
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: color,
+          foregroundColor: Colors.white,
+          padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _performBulkExport(ExportFormat format) async {
+    Navigator.pop(context); // Close format selection dialog
+    
+    try {
+      // Show loading dialog
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Exporting all projects...'),
+              SizedBox(height: 8),
+              Text(
+                'Format: ${_getFormatDisplayName(format)}',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+            ],
+          ),
+        ),
+      );
+      
+      if (format == ExportFormat.csv) {
+        // For CSV, combine all projects in one file
+        StringBuffer combinedData = StringBuffer();
+        combinedData.writeln('# TerraMag Field - Bulk Project Export');
+        combinedData.writeln('# Export Date: ${DateTime.now().toIso8601String()}');
+        combinedData.writeln('# Projects: ${_projects.length}');
+        combinedData.writeln('#');
+        
+        for (var project in _projects) {
+          if (project.id != null) {
+            final csvData = await DatabaseService.instance.exportProjectToCSV(project.id!);
+            combinedData.writeln('# PROJECT: ${project.name}');
+            combinedData.writeln(csvData);
+            combinedData.writeln('#${'=' * 50}');
+          }
+        }
+        
+        Navigator.pop(context); // Close loading dialog
+        
+        await Share.share(
+          combinedData.toString(),
+          subject: 'All Projects Export - TerraMag Field',
+        );
+      } else {
+        // For other formats, export each project separately
+        for (var project in _projects) {
+          if (project.id != null) {
+            final readings = await DatabaseService.instance.getReadingsForProject(project.id!);
+            final fieldNotes = await DatabaseService.instance.getFieldNotesForProject(project.id!);
+            
+            String exportData = await ExportService.instance.exportProject(
+              project: project,
+              readings: readings,
+              gridCells: [], // No grid cells from project manager
+              fieldNotes: fieldNotes,
+              format: format,
+            );
+            
+            String extension = ExportService.instance.getFileExtension(format);
+            String filename = '${project.name}_${DateTime.now().millisecondsSinceEpoch}$extension';
+            
+            await ExportService.instance.saveAndShare(
+              data: exportData,
+              filename: filename,
+              mimeType: ExportService.instance.getMimeType(format),
+            );
+          }
+        }
+        
+        Navigator.pop(context); // Close loading dialog
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('All projects exported successfully!')),
+      );
+    } catch (e) {
+      // Close loading dialog if still open
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+      
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Export failed: $e')),
       );
@@ -402,4 +719,36 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
       );
     }
   }
-}
+
+  // Helper methods for export format UI
+  String _getFormatDisplayName(ExportFormat format) {
+    switch (format) {
+      case ExportFormat.csv:
+        return 'CSV Spreadsheet';
+      case ExportFormat.geojson:
+        return 'GeoJSON';
+      case ExportFormat.kml:
+        return 'Google Earth KML';
+      case ExportFormat.sqlite:
+        return 'SQLite Database';
+      case ExportFormat.shapefile:
+        return 'Shapefile (WKT)';
+    }
+  }
+
+  String _getFormatDescription(ExportFormat format) {
+    switch (format) {
+      case ExportFormat.csv:
+        return 'Spreadsheet compatible format';
+      case ExportFormat.geojson:
+        return 'GIS and web mapping compatible';
+      case ExportFormat.kml:
+        return 'Google Earth and GPS compatible';
+      case ExportFormat.sqlite:
+        return 'Complete database backup';
+      case ExportFormat.shapefile:
+        return 'GIS shapefile format (WKT)';
+    }
+  }
+
+} // End of _ProjectManagerScreenState class
