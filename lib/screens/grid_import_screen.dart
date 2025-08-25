@@ -1,9 +1,14 @@
-// lib/screens/grid_import_screen.dart (Updated with Map Integration)
+// lib/screens/grid_import_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'package:file_picker/file_picker.dart';
-import 'dart:io';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:latlong2/latlong.dart';
+import 'dart:convert';
+import 'dart:math' as math;
+
 import 'grid_creation_map_screen.dart';
+import 'survey_screen.dart';
+import '../models/grid_cell.dart';
 
 class GridImportScreen extends StatefulWidget {
   @override
@@ -13,6 +18,58 @@ class GridImportScreen extends StatefulWidget {
 class _GridImportScreenState extends State<GridImportScreen> {
   List<GridFile> _importedGrids = [];
   bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedGrids();
+  }
+
+  // ==================== GRID PERSISTENCE ====================
+
+  Future<void> _loadSavedGrids() async {
+    setState(() => _isLoading = true);
+    
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final gridData = prefs.getString('saved_grids');
+      
+      if (gridData != null) {
+        final List<dynamic> decoded = json.decode(gridData);
+        if (mounted) {
+          setState(() {
+            _importedGrids = decoded.map((g) => GridFile.fromJson(g)).toList();
+          });
+        }
+      }
+    } catch (e) {
+      print('Error loading grids: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to load saved grids'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    }
+    
+    if (mounted) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _saveGrids() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final encoded = json.encode(_importedGrids.map((g) => g.toJson()).toList());
+      await prefs.setString('saved_grids', encoded);
+    } catch (e) {
+      print('Error saving grids: $e');
+    }
+  }
+
+  // ==================== UI BUILD METHODS ====================
 
   @override
   Widget build(BuildContext context) {
@@ -30,94 +87,96 @@ class _GridImportScreenState extends State<GridImportScreen> {
       ),
       body: Column(
         children: [
-          // Top Action Bar
-          Container(
-            padding: EdgeInsets.all(16),
-            color: Colors.grey[100],
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: _importFromFile,
-                        icon: Icon(Icons.upload_file),
-                        label: Text('Import File'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blue[800],
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                    ),
-                    SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: _createNewGridWithMap,
-                        icon: Icon(Icons.map),
-                        label: Text('Create with Map'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.green[800],
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: _createNewGridDialog,
-                        icon: Icon(Icons.grid_on),
-                        label: Text('Quick Create'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.purple[800],
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          
-          // Supported Formats Info
-          Container(
-            margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            padding: EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.blue[50],
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.blue[200]!),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Supported Formats:', style: TextStyle(fontWeight: FontWeight.w600, color: Colors.blue[800])),
-                SizedBox(height: 4),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    _buildFormatChip('KML', Icons.map, Colors.green),
-                    _buildFormatChip('KMZ', Icons.archive, Colors.green),
-                    _buildFormatChip('GeoJSON', Icons.code, Colors.blue),
-                    _buildFormatChip('CSV', Icons.table_chart, Colors.orange),
-                    _buildFormatChip('SHP', Icons.layers, Colors.purple),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          
-          // Grid List
+          _buildActionBar(),
+          _buildSupportedFormatsInfo(),
           Expanded(
             child: _isLoading
                 ? Center(child: CircularProgressIndicator())
                 : _importedGrids.isEmpty
                     ? _buildEmptyState()
                     : _buildGridList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionBar() {
+    return Container(
+      padding: EdgeInsets.all(16),
+      color: Colors.grey[100],
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _importFromFile,
+                  icon: Icon(Icons.upload_file),
+                  label: Text('Import File'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue[800],
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ),
+              SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _createNewGridWithMap,
+                  icon: Icon(Icons.map),
+                  label: Text('Create with Map'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green[800],
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _createNewGridDialog,
+                  icon: Icon(Icons.grid_on),
+                  label: Text('Quick Create'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.purple[800],
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSupportedFormatsInfo() {
+    return Container(
+      margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.blue[50],
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.blue[200]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Supported Formats:', style: TextStyle(fontWeight: FontWeight.w600, color: Colors.blue[800])),
+          SizedBox(height: 4),
+          Wrap(
+            spacing: 8,
+            children: [
+              _buildFormatChip('KML', Icons.map, Colors.green),
+              _buildFormatChip('GeoJSON', Icons.code, Colors.blue),
+              _buildFormatChip('CSV', Icons.table_chart, Colors.orange),
+              _buildFormatChip('CUSTOM', Icons.grid_on, Colors.purple),
+            ],
           ),
         ],
       ),
@@ -172,108 +231,108 @@ class _GridImportScreenState extends State<GridImportScreen> {
       itemCount: _importedGrids.length,
       itemBuilder: (context, index) {
         final grid = _importedGrids[index];
-        return Card(
-          margin: EdgeInsets.only(bottom: 12),
-          child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: _getTypeColor(grid.type),
-              child: Text(
-                grid.type.substring(0, 1),
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-            ),
-            title: Text(grid.name, style: TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('${grid.points} grid points • ${grid.size}'),
-                if (grid.spacing != null && grid.rows != null && grid.cols != null)
-                  Text('${grid.spacing}m spacing • ${grid.rows}×${grid.cols} grid'),
-                Text(
-                  'Created ${_formatDate(grid.imported)}',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                ),
-              ],
-            ),
-            trailing: PopupMenuButton<String>(
-              itemBuilder: (context) => [
-                PopupMenuItem(
-                  value: 'use',
-                  child: Row(
-                    children: [
-                      Icon(Icons.play_arrow, size: 18),
-                      SizedBox(width: 8),
-                      Text('Use for Survey'),
-                    ],
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 'preview',
-                  child: Row(
-                    children: [
-                      Icon(Icons.visibility, size: 18),
-                      SizedBox(width: 8),
-                      Text('Preview'),
-                    ],
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 'edit',
-                  child: Row(
-                    children: [
-                      Icon(Icons.edit, size: 18),
-                      SizedBox(width: 8),
-                      Text('Edit'),
-                    ],
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 'export',
-                  child: Row(
-                    children: [
-                      Icon(Icons.download, size: 18),
-                      SizedBox(width: 8),
-                      Text('Export'),
-                    ],
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 'delete',
-                  child: Row(
-                    children: [
-                      Icon(Icons.delete, size: 18, color: Colors.red),
-                      SizedBox(width: 8),
-                      Text('Delete', style: TextStyle(color: Colors.red)),
-                    ],
-                  ),
-                ),
-              ],
-              onSelected: (value) => _handleGridAction(value, grid),
-            ),
-            onTap: () => _previewGrid(grid),
-          ),
-        );
+        return _buildGridCard(grid);
       },
     );
   }
 
+  Widget _buildGridCard(GridFile grid) {
+    return Card(
+      margin: EdgeInsets.only(bottom: 12),
+      elevation: 2,
+      child: Padding(
+        padding: EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _getTypeColor(grid.type).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: _getTypeColor(grid.type)),
+                  ),
+                  child: Text(
+                    grid.type,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: _getTypeColor(grid.type),
+                    ),
+                  ),
+                ),
+                Spacer(),
+                PopupMenuButton<String>(
+                  onSelected: (action) => _handleGridAction(action, grid),
+                  itemBuilder: (context) => [
+                    PopupMenuItem(value: 'use', child: Row(children: [Icon(Icons.play_arrow, color: Colors.green), SizedBox(width: 8), Text('Use for Survey')])),
+                    PopupMenuItem(value: 'preview', child: Row(children: [Icon(Icons.visibility, color: Colors.blue), SizedBox(width: 8), Text('Preview')])),
+                    if (grid.type == 'MAP' || grid.type == 'CUSTOM')
+                      PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit, color: Colors.orange), SizedBox(width: 8), Text('Edit')])),
+                    PopupMenuItem(value: 'export', child: Row(children: [Icon(Icons.download, color: Colors.purple), SizedBox(width: 8), Text('Export')])),
+                    PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete, color: Colors.red), SizedBox(width: 8), Text('Delete')])),
+                  ],
+                ),
+              ],
+            ),
+            SizedBox(height: 8),
+            Text(
+              grid.name,
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            SizedBox(height: 4),
+            Row(
+              children: [
+                Icon(Icons.grid_on, size: 16, color: Colors.grey[600]),
+                SizedBox(width: 4),
+                Text('${grid.points} points', style: TextStyle(color: Colors.grey[600])),
+                if (grid.spacing != null) ...[
+                  SizedBox(width: 16),
+                  Icon(Icons.straighten, size: 16, color: Colors.grey[600]),
+                  SizedBox(width: 4),
+                  Text('${grid.spacing}m spacing', style: TextStyle(color: Colors.grey[600])),
+                ],
+              ],
+            ),
+            if (grid.rows != null && grid.cols != null)
+              Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Row(
+                  children: [
+                    Icon(Icons.grid_3x3, size: 16, color: Colors.grey[600]),
+                    SizedBox(width: 4),
+                    Text('${grid.rows}×${grid.cols} grid', style: TextStyle(color: Colors.grey[600])),
+                    Spacer(),
+                    Text(
+                      '${_formatDate(grid.imported)}',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Color _getTypeColor(String type) {
-    switch (type.toUpperCase()) {
+    switch (type) {
       case 'KML':
       case 'KMZ':
         return Colors.green;
       case 'GEOJSON':
-      case 'JSON':
         return Colors.blue;
       case 'CSV':
         return Colors.orange;
-      case 'SHP':
-        return Colors.purple;
       case 'MAP':
-        return Colors.green[700]!;
+        return Colors.teal;
       case 'CUSTOM':
+        return Colors.purple;
       default:
-        return Colors.grey[600]!;
+        return Colors.grey;
     }
   }
 
@@ -281,235 +340,18 @@ class _GridImportScreenState extends State<GridImportScreen> {
     final now = DateTime.now();
     final difference = now.difference(date);
     
-    if (difference.inMinutes < 60) {
-      return '${difference.inMinutes}m ago';
-    } else if (difference.inHours < 24) {
-      return '${difference.inHours}h ago';
+    if (difference.inDays == 0) {
+      return 'Today ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+    } else if (difference.inDays == 1) {
+      return 'Yesterday';
     } else if (difference.inDays < 7) {
-      return '${difference.inDays}d ago';
+      return '${difference.inDays} days ago';
     } else {
       return '${date.day}/${date.month}/${date.year}';
     }
   }
 
-  // Import from file functionality
-  Future<void> _importFromFile() async {
-    setState(() {
-      _isLoading = true;
-    });
-
-    try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['kml', 'kmz', 'geojson', 'json', 'csv', 'shp'],
-        allowMultiple: true,
-      );
-
-      if (result != null) {
-        for (PlatformFile file in result.files) {
-          if (file.path != null) {
-            await _processImportedFile(File(file.path!));
-          }
-        }
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${result.files.length} file(s) imported successfully!')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Import failed: $e')),
-      );
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
-    }
-  }
-
-  Future<void> _processImportedFile(File file) async {
-    final fileName = file.path.split('/').last;
-    final fileSize = await file.length();
-    final extension = fileName.split('.').last.toUpperCase();
-    
-    // Simulate processing time
-    await Future.delayed(Duration(milliseconds: 500));
-    
-    // Generate random but reasonable point count based on file size
-    final pointCount = (fileSize / 1000).round().clamp(16, 144);
-    
-    setState(() {
-      _importedGrids.insert(0, GridFile(
-        name: fileName,
-        type: extension,
-        size: _formatFileSize(fileSize),
-        points: pointCount,
-        imported: DateTime.now(),
-      ));
-    });
-  }
-
-  String _formatFileSize(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1048576) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / 1048576).toStringAsFixed(1)} MB';
-  }
-
-  // Create new grid with map visualization
-  void _createNewGridWithMap() async {
-    final result = await Navigator.push<Map<String, dynamic>>(
-      context,
-      MaterialPageRoute(
-        builder: (context) => GridCreationMapScreen(),
-      ),
-    );
-
-    if (result != null) {
-      setState(() {
-        _importedGrids.insert(0, GridFile(
-          name: result['name'],
-          type: 'MAP',
-          size: _estimateGridSize(result['points']),
-          points: result['points'],
-          spacing: result['spacing'],
-          rows: result['rows'],
-          cols: result['cols'],
-          imported: DateTime.now(),
-        ));
-      });
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Grid "${result['name']}" created successfully!')),
-      );
-    }
-  }
-
-  String _estimateGridSize(int points) {
-    // Rough estimate based on point count
-    final estimatedBytes = points * 100; // 100 bytes per point estimate
-    return _formatFileSize(estimatedBytes);
-  }
-
-  // Quick create dialog (simplified version without map)
-  void _createNewGridDialog() {
-    final TextEditingController nameController = TextEditingController();
-    final TextEditingController spacingController = TextEditingController(text: '10');
-    final TextEditingController linesController = TextEditingController(text: '7');
-    
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Quick Create Grid'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: InputDecoration(
-                labelText: 'Grid Name',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: spacingController,
-                    decoration: InputDecoration(
-                      labelText: 'Spacing (m)',
-                      border: OutlineInputBorder(),
-                    ),
-                    keyboardType: TextInputType.number,
-                  ),
-                ),
-                SizedBox(width: 12),
-                Expanded(
-                  child: TextField(
-                    controller: linesController,
-                    decoration: InputDecoration(
-                      labelText: 'Lines',
-                      border: OutlineInputBorder(),
-                    ),
-                    keyboardType: TextInputType.number,
-                  ),
-                ),
-              ],
-            ),
-            SizedBox(height: 16),
-            Container(
-              padding: EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.orange[50],
-                borderRadius: BorderRadius.circular(4),
-                border: Border.all(color: Colors.orange[200]!),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.info, size: 16, color: Colors.orange[700]),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'For precise positioning, use "Create with Map" instead',
-                      style: TextStyle(fontSize: 12, color: Colors.orange[700]),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _createGridFromParameters(
-                nameController.text,
-                spacingController.text,
-                linesController.text,
-              );
-            },
-            child: Text('Create'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.purple[800],
-              foregroundColor: Colors.white,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _createGridFromParameters(String name, String spacing, String lines) {
-    // Parse user inputs with validation
-    final gridName = name.trim().isEmpty ? 'Quick Grid ${_importedGrids.length + 1}' : name.trim();
-    final spacingValue = double.tryParse(spacing) ?? 10.0;
-    final linesValue = int.tryParse(lines) ?? 7;
-    
-    // Calculate grid points based on user input (square grid)
-    final gridPoints = linesValue * linesValue;
-    
-    setState(() {
-      _importedGrids.insert(0, GridFile(
-        name: gridName,
-        type: 'CUSTOM',
-        size: _estimateGridSize(gridPoints),
-        points: gridPoints,
-        spacing: spacingValue,
-        rows: linesValue,
-        cols: linesValue,
-        imported: DateTime.now(),
-      ));
-    });
-    
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Grid "$gridName" created with $gridPoints points!')),
-    );
-  }
+  // ==================== GRID ACTIONS ====================
 
   void _handleGridAction(String action, GridFile grid) {
     switch (action) {
@@ -543,12 +385,44 @@ class _GridImportScreenState extends State<GridImportScreen> {
             child: Text('Cancel'),
           ),
           ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              Navigator.pop(context); // Go back to main screen
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Grid "${grid.name}" loaded for survey')),
-              );
+            onPressed: () async {
+              final navigator = Navigator.of(context);
+              final scaffoldMessenger = ScaffoldMessenger.of(context);
+              
+              navigator.pop(); // Close dialog
+              
+              try {
+                // Convert GridFile to actual GridCells for survey
+                List<GridCell> surveyGrid = _convertToGridCells(grid);
+                
+                // Navigate to survey screen with the grid
+                await navigator.pushReplacement(
+                  MaterialPageRoute(
+                    builder: (context) => SurveyScreen(
+                      initialGridCells: surveyGrid,
+                      gridCenter: _calculateGridCenter(surveyGrid),
+                    ),
+                  ),
+                );
+                
+                if (mounted) {
+                  scaffoldMessenger.showSnackBar(
+                    SnackBar(
+                      content: Text('Grid "${grid.name}" loaded for survey'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  scaffoldMessenger.showSnackBar(
+                    SnackBar(
+                      content: Text('Failed to load grid: $e'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              }
             },
             child: Text('Start Survey'),
             style: ElevatedButton.styleFrom(
@@ -592,7 +466,7 @@ class _GridImportScreenState extends State<GridImportScreen> {
                         ],
                         SizedBox(height: 8),
                         Text(
-                          'Interactive preview available in survey mode',
+                          'Full visualization available in survey mode',
                           style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                           textAlign: TextAlign.center,
                         ),
@@ -608,7 +482,7 @@ class _GridImportScreenState extends State<GridImportScreen> {
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Full grid visualization available when starting survey',
+                      'Interactive preview available when starting survey',
                       style: TextStyle(fontSize: 12, color: Colors.blue[700]),
                     ),
                   ),
@@ -640,12 +514,11 @@ class _GridImportScreenState extends State<GridImportScreen> {
 
   void _editGrid(GridFile grid) {
     if (grid.type == 'MAP' || grid.type == 'CUSTOM') {
-      // Allow editing of custom grids
       final TextEditingController nameController = TextEditingController(text: grid.name);
       final TextEditingController spacingController = TextEditingController(text: grid.spacing?.toString() ?? '10');
       final TextEditingController rowsController = TextEditingController(text: grid.rows?.toString() ?? '7');
       final TextEditingController colsController = TextEditingController(text: grid.cols?.toString() ?? '7');
-      
+
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
@@ -689,7 +562,7 @@ class _GridImportScreenState extends State<GridImportScreen> {
                     child: TextField(
                       controller: colsController,
                       decoration: InputDecoration(
-                        labelText: 'Cols',
+                        labelText: 'Columns',
                         border: OutlineInputBorder(),
                       ),
                       keyboardType: TextInputType.number,
@@ -705,7 +578,10 @@ class _GridImportScreenState extends State<GridImportScreen> {
               child: Text('Cancel'),
             ),
             ElevatedButton(
-              onPressed: () {
+              onPressed: () async {
+                final navigator = Navigator.of(context);
+                final scaffoldMessenger = ScaffoldMessenger.of(context);
+                
                 final spacing = double.tryParse(spacingController.text) ?? 10.0;
                 final rows = int.tryParse(rowsController.text) ?? 7;
                 final cols = int.tryParse(colsController.text) ?? 7;
@@ -725,10 +601,17 @@ class _GridImportScreenState extends State<GridImportScreen> {
                   );
                 });
                 
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Grid updated successfully')),
-                );
+                await _saveGrids();
+                navigator.pop();
+                
+                if (mounted) {
+                  scaffoldMessenger.showSnackBar(
+                    SnackBar(
+                      content: Text('Grid updated successfully'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
               },
               child: Text('Save'),
               style: ElevatedButton.styleFrom(
@@ -740,9 +623,14 @@ class _GridImportScreenState extends State<GridImportScreen> {
         ),
       );
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Cannot edit imported grid files')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Cannot edit imported grid files'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
     }
   }
 
@@ -758,20 +646,38 @@ class _GridImportScreenState extends State<GridImportScreen> {
             child: Text('Cancel'),
           ),
           TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Grid exported as KML (demo)')),
-              );
+            onPressed: () async {
+              final navigator = Navigator.of(context);
+              final scaffoldMessenger = ScaffoldMessenger.of(context);
+              
+              navigator.pop();
+              
+              if (mounted) {
+                scaffoldMessenger.showSnackBar(
+                  SnackBar(
+                    content: Text('Grid exported as KML (demo)'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              }
             },
             child: Text('KML'),
           ),
           TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Grid exported as CSV (demo)')),
-              );
+            onPressed: () async {
+              final navigator = Navigator.of(context);
+              final scaffoldMessenger = ScaffoldMessenger.of(context);
+              
+              navigator.pop();
+              
+              if (mounted) {
+                scaffoldMessenger.showSnackBar(
+                  SnackBar(
+                    content: Text('Grid exported as CSV (demo)'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              }
             },
             child: Text('CSV'),
           ),
@@ -805,10 +711,262 @@ class _GridImportScreenState extends State<GridImportScreen> {
         _importedGrids.remove(grid);
       });
       
+      await _saveGrids();
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Grid "${grid.name}" deleted'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    }
+  }
+
+  // ==================== GRID CREATION ====================
+
+  void _importFromFile() async {
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Grid "${grid.name}" deleted')),
+        SnackBar(
+          content: Text('File import feature will be implemented in future updates'),
+          backgroundColor: Colors.blue,
+        ),
       );
     }
+  }
+
+  void _createNewGridWithMap() async {
+    final result = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => GridCreationMapScreen(),
+      ),
+    );
+
+    if (result != null) {
+      final newGrid = GridFile(
+        name: result['name'] ?? 'Custom Grid',
+        type: 'MAP',
+        size: _estimateGridSize(result['points'] ?? 0),
+        points: result['points'] ?? 0,
+        spacing: result['spacing'],
+        rows: result['rows'],
+        cols: result['cols'],
+        imported: DateTime.now(),
+      );
+
+      setState(() {
+        _importedGrids.insert(0, newGrid);
+      });
+
+      await _saveGrids();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Grid "${newGrid.name}" created successfully!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    }
+  }
+
+  void _createNewGridDialog() {
+    final TextEditingController nameController = TextEditingController();
+    final TextEditingController spacingController = TextEditingController(text: '10');
+    final TextEditingController linesController = TextEditingController(text: '7');
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Quick Create Grid'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: InputDecoration(
+                labelText: 'Grid Name',
+                hintText: 'Enter grid name',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: spacingController,
+                    decoration: InputDecoration(
+                      labelText: 'Spacing (m)',
+                      border: OutlineInputBorder(),
+                    ),
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+                SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: linesController,
+                    decoration: InputDecoration(
+                      labelText: 'Grid Size',
+                      hintText: 'e.g., 7 for 7x7',
+                      border: OutlineInputBorder(),
+                    ),
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: 16),
+            Container(
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange[50],
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange[200]!),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info, size: 16, color: Colors.orange[700]),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'For precise positioning, use "Create with Map" instead',
+                      style: TextStyle(fontSize: 12, color: Colors.orange[700]),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final navigator = Navigator.of(context);
+              navigator.pop();
+              _createGridFromParameters(
+                nameController.text,
+                spacingController.text,
+                linesController.text,
+              );
+            },
+            child: Text('Create'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.purple[800],
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _createGridFromParameters(String name, String spacing, String lines) async {
+    final gridName = name.trim().isEmpty ? 'Quick Grid ${_importedGrids.length + 1}' : name.trim();
+    final spacingValue = double.tryParse(spacing) ?? 10.0;
+    final linesValue = int.tryParse(lines) ?? 7;
+    final gridPoints = linesValue * linesValue;
+    
+    final newGrid = GridFile(
+      name: gridName,
+      type: 'CUSTOM',
+      size: _estimateGridSize(gridPoints),
+      points: gridPoints,
+      spacing: spacingValue,
+      rows: linesValue,
+      cols: linesValue,
+      imported: DateTime.now(),
+    );
+    
+    setState(() {
+      _importedGrids.insert(0, newGrid);
+    });
+    
+    await _saveGrids();
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Grid "$gridName" created with $gridPoints points!'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
+  // ==================== HELPER METHODS ====================
+
+  List<GridCell> _convertToGridCells(GridFile grid) {
+    List<GridCell> cells = [];
+    
+    // Use default center location (can be improved with actual location)
+    LatLng center = LatLng(5.6037, -0.1870); // Default fallback
+    
+    if (grid.rows != null && grid.cols != null && grid.spacing != null) {
+      double cellSize = grid.spacing! / 111000; // Convert meters to degrees (rough approximation)
+      int rows = grid.rows!;
+      int cols = grid.cols!;
+      double halfRows = rows / 2.0;
+      double halfCols = cols / 2.0;
+      
+      for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+          double lat = center.latitude + (i - halfRows) * cellSize;
+          double lon = center.longitude + (j - halfCols) * cellSize;
+          
+          List<LatLng> bounds = [
+            LatLng(lat, lon),
+            LatLng(lat + cellSize, lon),
+            LatLng(lat + cellSize, lon + cellSize),
+            LatLng(lat, lon + cellSize),
+          ];
+          
+          GridCell cell = GridCell(
+            id: 'cell_${i}_${j}',
+            centerLat: lat + cellSize / 2,
+            centerLon: lon + cellSize / 2,
+            bounds: bounds,
+            status: GridCellStatus.notStarted,
+            pointCount: 0,
+            notes: null,
+          );
+          cells.add(cell);
+        }
+      }
+    }
+    
+    return cells;
+  }
+
+  LatLng _calculateGridCenter(List<GridCell> cells) {
+    if (cells.isEmpty) return LatLng(5.6037, -0.1870);
+    
+    double totalLat = 0;
+    double totalLon = 0;
+    
+    for (var cell in cells) {
+      totalLat += cell.centerLat;
+      totalLon += cell.centerLon;
+    }
+    
+    return LatLng(totalLat / cells.length, totalLon / cells.length);
+  }
+
+  String _estimateGridSize(int points) {
+    if (points < 10) return '< 1KB';
+    if (points < 50) return '~ 2KB';
+    if (points < 100) return '~ 5KB';
+    if (points < 500) return '~ 20KB';
+    return '~ ${(points * 0.05).toStringAsFixed(0)}KB';
   }
 
   void _showHelpDialog() {
@@ -838,7 +996,7 @@ class _GridImportScreenState extends State<GridImportScreen> {
               Text('• KML/KMZ: Google Earth files with survey boundaries'),
               Text('• GeoJSON: Standard geospatial data format'),
               Text('• CSV: Coordinate files with lat/lon columns'),
-              Text('• Shapefile: ESRI shapefile format'),
+              Text('• Custom: App-generated grids'),
               SizedBox(height: 16),
               Text('Best Practices:', style: TextStyle(fontWeight: FontWeight.bold)),
               SizedBox(height: 8),
@@ -861,6 +1019,8 @@ class _GridImportScreenState extends State<GridImportScreen> {
   }
 }
 
+// ==================== GRID FILE MODEL ====================
+
 class GridFile {
   final String name;
   final String type;
@@ -881,4 +1041,77 @@ class GridFile {
     this.rows,
     this.cols,
   });
+
+  // JSON serialization for persistence
+  Map<String, dynamic> toJson() {
+    return {
+      'name': name,
+      'type': type,
+      'size': size,
+      'points': points,
+      'imported': imported.toIso8601String(),
+      'spacing': spacing,
+      'rows': rows,
+      'cols': cols,
+    };
+  }
+
+  static GridFile fromJson(Map<String, dynamic> json) {
+    return GridFile(
+      name: json['name'],
+      type: json['type'],
+      size: json['size'],
+      points: json['points'],
+      imported: DateTime.parse(json['imported']),
+      spacing: json['spacing']?.toDouble(),
+      rows: json['rows'],
+      cols: json['cols'],
+    );
+  }
+
+  // Create a copy with updated fields
+  GridFile copyWith({
+    String? name,
+    String? type,
+    String? size,
+    int? points,
+    DateTime? imported,
+    double? spacing,
+    int? rows,
+    int? cols,
+  }) {
+    return GridFile(
+      name: name ?? this.name,
+      type: type ?? this.type,
+      size: size ?? this.size,
+      points: points ?? this.points,
+      imported: imported ?? this.imported,
+      spacing: spacing ?? this.spacing,
+      rows: rows ?? this.rows,
+      cols: cols ?? this.cols,
+    );
+  }
+
+  @override
+  String toString() {
+    return 'GridFile(name: $name, type: $type, points: $points)';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is GridFile &&
+        other.name == name &&
+        other.type == type &&
+        other.points == points &&
+        other.imported == imported;
+  }
+
+  @override
+  int get hashCode {
+    return name.hashCode ^ 
+           type.hashCode ^ 
+           points.hashCode ^ 
+           imported.hashCode;
+  }
 }

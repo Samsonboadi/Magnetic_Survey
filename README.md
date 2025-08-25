@@ -1,4 +1,4 @@
-# magnetic_survey_app
+# new_magnetic_survey_app
 
 A new Flutter project.
 

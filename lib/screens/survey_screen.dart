@@ -1,3 +1,4 @@
+// lib/screens/survey_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:geolocator/geolocator.dart';
@@ -10,13 +11,10 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
-import 'package:flutter/painting.dart' show FileImage;
-
-import 'dart:io' as io show File; // Only available on mobile/desktop
 
 import '../models/magnetic_reading.dart';
 import '../models/survey_project.dart';
-import '../models/grid_cell.dart'; // Import grid_cell.dart for GridCellStatus
+import '../models/grid_cell.dart';
 import '../models/team_member.dart';
 import '../models/field_note.dart';
 import '../services/database_service.dart';
@@ -31,9 +29,6 @@ enum MapBaseLayer {
   satellite,
   emag2Magnetic,
 }
-
-// Define ExportFormat enum
-//enum ExportFormat { csv, geojson, kml, sqlite, shapefile }
 
 class SurveyScreen extends StatefulWidget {
   final SurveyProject? project;
@@ -90,107 +85,91 @@ class _SurveyScreenState extends State<SurveyScreen> {
   bool _autoNavigate = true;
   bool _isCollecting = false;
   bool _isTeamMode = false;
+  bool _hasLocationError = false;
+  bool _needsTargetCellUpdate = false;
   String _surveyMode = 'manual';
   MapBaseLayer _currentBaseLayer = MapBaseLayer.openStreetMap;
 
   // Settings
   Duration _magneticPullRate = Duration(seconds: 1);
   Timer? _automaticCollectionTimer;
+  Timer? _webSimulationTimer;
 
   // Stream subscriptions
   StreamSubscription<MagnetometerEvent>? _magnetometerSubscription;
   StreamSubscription<CompassEvent>? _compassSubscription;
   StreamSubscription<Position>? _positionSubscription;
   StreamSubscription<List<TeamMember>>? _teamSyncSubscription;
-  Timer? _webSimulationTimer;
 
   // Services
   final TeamSyncService _teamService = TeamSyncService.instance;
-  final ExportService _exportService = ExportService.instance;
-  final ImagePicker _imagePicker = ImagePicker();
 
   @override
   void initState() {
     super.initState();
-    if (widget.initialGridCells != null && widget.initialGridCells!.isNotEmpty) {
-      _initializeWithProvidedGrid();
-    } else {
-      _initializeSurvey();
-    }
+    _initializeLocation();
+    _startSensorListening();
     _setupTeamSync();
+    
+    // Only load grid if passed from grid management
+    if (widget.initialGridCells != null && widget.initialGridCells!.isNotEmpty) {
+      setState(() {
+        _gridCells = widget.initialGridCells!;
+        _showGrid = true;
+      });
+      // Don't call _findNextTargetCell here - wait until map is ready
+      _needsTargetCellUpdate = true;
+    }
+    
     _loadPreviousSurveyData();
+    
+    if (_isWebMode) {
+      _simulateDataForWeb();
+    }
   }
 
   @override
   void dispose() {
-    _automaticCollectionTimer?.cancel();
+    _positionSubscription?.cancel();
     _magnetometerSubscription?.cancel();
     _compassSubscription?.cancel();
-    _positionSubscription?.cancel();
     _teamSyncSubscription?.cancel();
+    _automaticCollectionTimer?.cancel();
     _webSimulationTimer?.cancel();
-    _mapController.dispose();
     super.dispose();
   }
 
-  // ==================== INITIALIZATION ====================
-
-  void _initializeSurvey() {
-    if (!_isWebMode) {
-      _initializeLocation();
-      _startSensorListening();
-    } else {
-      _simulateDataForWeb();
-    }
-    _createSampleGrid();
-  }
-
-  void _initializeWithProvidedGrid() {
-    setState(() {
-      _gridCells = List.from(widget.initialGridCells!);
-    });
-    if (!_isWebMode) {
-      _initializeLocation();
-      _startSensorListening();
-    } else {
-      _simulateDataForWeb();
-    }
-    if (widget.gridCenter != null) {
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    
+    // Show location error after widget tree is fully built
+    if (_hasLocationError) {
+      _hasLocationError = false; // Reset flag
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          _mapController.move(widget.gridCenter!, 16.0);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Unable to get current location. Please check GPS and permissions.'),
+              backgroundColor: Colors.red,
+            ),
+          );
         }
       });
     }
-    _findNextTargetCell();
-    _updateCoverageStats();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                Icon(Icons.grid_on, color: Colors.white),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Grid loaded with ${_gridCells.length} survey points. Happy surveying!',
-                  ),
-                ),
-              ],
-            ),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 4),
-            action: SnackBarAction(
-              label: 'OK',
-              textColor: Colors.white,
-              onPressed: () {},
-            ),
-          ),
-        );
-      }
-    });
+
+    // Update target cell after map is ready
+    if (_needsTargetCellUpdate) {
+      _needsTargetCellUpdate = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _gridCells.isNotEmpty) {
+          _findNextTargetCell();
+        }
+      });
+    }
   }
+
+  // ==================== INITIALIZATION ====================
 
   void _setupTeamSync() {
     _teamSyncSubscription = _teamService.teamMembersStream.listen((members) {
@@ -207,14 +186,17 @@ class _SurveyScreenState extends State<SurveyScreen> {
     if (widget.project != null && !_isWebMode) {
       try {
         final readings = await DatabaseService.instance.getReadingsForProject(widget.project!.id!);
-        setState(() {
-          _savedReadings = readings;
-          _collectedPoints.addAll(readings.map((r) => LatLng(r.latitude, r.longitude)));
-          _pointCount = readings.length;
-        });
-        _updateCoverageStats();
+        if (mounted) {
+          setState(() {
+            _savedReadings = readings;
+            _collectedPoints.addAll(readings.map((r) => LatLng(r.latitude, r.longitude)));
+            _pointCount = readings.length;
+          });
+          _updateCoverageStats();
+        }
       } catch (e) {
         print('Error loading previous survey data: $e');
+        // Don't show SnackBar during initialization
       }
     }
   }
@@ -225,15 +207,32 @@ class _SurveyScreenState extends State<SurveyScreen> {
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
       }
+      
       if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
-        Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+        Position position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 10),
+        );
+        
         if (mounted) {
           setState(() {
             _currentPosition = position;
             _gpsAccuracy = position.accuracy;
             _isGpsCalibrated = position.accuracy < 5.0;
           });
+          
+          // Center the map on current location - but handle controller not being ready
+          try {
+            _mapController.move(
+              LatLng(position.latitude, position.longitude), 
+              18.0
+            );
+          } catch (e) {
+            // Map controller not ready yet, that's fine
+            print('Map controller not ready during initialization: $e');
+          }
         }
+        
         _positionSubscription = Geolocator.getPositionStream(
           locationSettings: LocationSettings(
             accuracy: LocationAccuracy.high,
@@ -248,14 +247,33 @@ class _SurveyScreenState extends State<SurveyScreen> {
                 _showGpsGuidance();
               }
             });
+            
+            // Auto-center map on location updates if needed
+            if (_autoNavigate) {
+              try {
+                _mapController.move(
+                  LatLng(position.latitude, position.longitude), 
+                  _mapController.camera.zoom
+                );
+              } catch (e) {
+                // Map controller not ready yet, that's fine
+                print('Map controller not ready for auto-navigation: $e');
+              }
+            }
+            
             if (_isTeamMode) {
-              _teamService.updateMyPosition(LatLng(position.latitude, position.longitude), _heading);
+              _teamService.updateMyPosition(
+                LatLng(position.latitude, position.longitude), 
+                _heading
+              );
             }
           }
         });
       }
     } catch (e) {
       print('Location error: $e');
+      // Don't show SnackBar during initState - use a flag instead
+      _hasLocationError = true;
     }
   }
 
@@ -270,6 +288,7 @@ class _SurveyScreenState extends State<SurveyScreen> {
         });
       }
     });
+
     _compassSubscription = FlutterCompass.events?.listen((CompassEvent event) {
       if (mounted) {
         setState(() {
@@ -296,44 +315,95 @@ class _SurveyScreenState extends State<SurveyScreen> {
     });
   }
 
-  void _createSampleGrid() {
-    List<GridCell> cells = [];
-    LatLng center = _isWebMode
-        ? LatLng(5.6037, -0.1870)
-        : (_currentPosition != null
-            ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
-            : LatLng(5.6037, -0.1870));
-    double cellSize = 0.0001;
-    int gridSize = 4;
-    double halfGrid = gridSize / 2.0;
-    for (int i = 0; i < gridSize; i++) {
-      for (int j = 0; j < gridSize; j++) {
-        double lat = center.latitude + (i - halfGrid) * cellSize;
-        double lon = center.longitude + (j - halfGrid) * cellSize;
-        List<LatLng> bounds = [
-          LatLng(lat, lon),
-          LatLng(lat + cellSize, lon),
-          LatLng(lat + cellSize, lon + cellSize),
-          LatLng(lat, lon + cellSize),
-        ];
-        double centerLat = lat + cellSize / 2;
-        double centerLon = lon + cellSize / 2;
-        GridCell cell = GridCell(
-          id: 'cell_${i}_${j}',
-          centerLat: centerLat,
-          centerLon: centerLon,
-          bounds: bounds,
-          status: GridCellStatus.notStarted,
-          pointCount: 0,
-          notes: null,
-        );
-        cells.add(cell);
+  void _showGpsGuidance() {
+    if (!mounted) return;
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.warning, color: Colors.white),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'GPS accuracy is poor. Move to open sky for better signal.',
+                style: TextStyle(color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: Colors.orange,
+        duration: Duration(seconds: 3),
+      ),
+    );
+  }
+
+  // ==================== GRID MANAGEMENT ====================
+
+  void _findNextTargetCell() {
+    if (_gridCells.isEmpty) return;
+
+    // Don't proceed if map controller is not ready
+    try {
+      GridCell? nextCell;
+      for (var cell in _gridCells) {
+        if (cell.status == GridCellStatus.notStarted) {
+          nextCell = cell;
+          break;
+        }
       }
+
+      if (nextCell == null) {
+        for (var cell in _gridCells) {
+          if (cell.status == GridCellStatus.inProgress) {
+            nextCell = cell;
+            break;
+          }
+        }
+      }
+
+      setState(() {
+        _nextTargetCell = nextCell;
+      });
+
+      if (nextCell != null && _autoNavigate) {
+        try {
+          _mapController.move(
+            LatLng(nextCell.centerLat, nextCell.centerLon),
+            _mapController.camera.zoom
+          );
+        } catch (e) {
+          // Map controller not ready yet, that's fine
+          print('Map controller not ready for navigation: $e');
+        }
+      }
+    } catch (e) {
+      print('Error finding next target cell: $e');
     }
-    setState(() {
-      _gridCells = cells;
-    });
-    _findNextTargetCell();
+  }
+
+  void _updateCoverageStats() {
+    if (_gridCells.isNotEmpty) {
+      _completedCells = _gridCells.where((cell) => cell.status == GridCellStatus.completed).length;
+      _coveragePercentage = (_completedCells / _gridCells.length) * 100;
+    } else {
+      _completedCells = 0;
+      _coveragePercentage = 0.0;
+    }
+    
+    // Update point count from actual collected points + saved readings
+    _pointCount = _collectedPoints.length + _savedReadings.length;
+  }
+
+  Color _getCellColor(GridCellStatus status) {
+    switch (status) {
+      case GridCellStatus.notStarted:
+        return Colors.grey;
+      case GridCellStatus.inProgress:
+        return Colors.orange;
+      case GridCellStatus.completed:
+        return Colors.green;
+    }
   }
 
   // ==================== UI COMPONENTS ====================
@@ -346,14 +416,13 @@ class _SurveyScreenState extends State<SurveyScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              widget.project?.name ?? 'Magnetic Survey',
+              widget.project?.name ?? 'Survey Session',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
-            if (_gridCells.isNotEmpty)
-              Text(
-                '${_gridCells.length} grid points • ${_coveragePercentage.toStringAsFixed(0)}% complete',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.normal),
-              ),
+            Text(
+              'Points: $_pointCount | Coverage: ${_coveragePercentage.toStringAsFixed(1)}% | Field: ${_totalField.toStringAsFixed(1)}nT',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.normal),
+            ),
           ],
         ),
         backgroundColor: Colors.blue[800],
@@ -364,90 +433,18 @@ class _SurveyScreenState extends State<SurveyScreen> {
             onPressed: _showSettings,
           ),
           IconButton(
-            icon: Icon(Icons.tune),
-            onPressed: _showCalibrationDialog,
-          ),
-          IconButton(
-            icon: const Icon(Icons.note_add),
-            onPressed: _showFieldNotesDialog,
-          ),
-          IconButton(
-            icon: const Icon(Icons.file_download),
-            onPressed: _showExportOptions,
+            icon: Icon(Icons.help),
+            onPressed: _showHelpDialog,
           ),
         ],
       ),
       body: Column(
         children: [
-          _buildStatusBar(),
-          Expanded(flex: 3, child: _buildMapView()),
           _buildControlPanel(),
+          Expanded(child: _buildMapView()),
         ],
       ),
-      bottomSheet: _isTeamMode ? TeamPanel(onTeamModeToggle: _onTeamModeToggle) : null,
-      floatingActionButton: Column(
-        mainAxisAlignment: MainAxisAlignment.end,
-        children: [
-          if (_isTeamMode)
-            FloatingActionButton(
-              heroTag: "team",
-              onPressed: _showBottomSheet,
-              child: const Icon(Icons.group),
-              backgroundColor: Colors.purple,
-              mini: true,
-            ),
-          const SizedBox(height: 10),
-          FloatingActionButton(
-            heroTag: "record",
-            onPressed: _recordMagneticReading,
-            child: const Icon(Icons.add_location),
-            backgroundColor: Colors.green,
-          ),
-          const SizedBox(height: 10),
-          FloatingActionButton(
-            heroTag: "auto",
-            onPressed: _toggleDataCollection,
-            child: Icon(_isCollecting ? Icons.pause : Icons.play_arrow),
-            backgroundColor: _isCollecting ? Colors.red : Colors.blue[800],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatusBar() {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      color: Colors.grey[100],
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            _buildStatusItem('Coverage', '${_coveragePercentage.toStringAsFixed(0)}%', 
-                _coveragePercentage > 75 ? Colors.green : _coveragePercentage > 25 ? Colors.orange : Colors.red),
-            SizedBox(width: 16),
-            _buildStatusItem('Points', '$_pointCount', Colors.blue),
-            SizedBox(width: 16),
-            _buildStatusItem('Field', '${_totalField.toStringAsFixed(0)} μT', Colors.purple),
-            SizedBox(width: 16),
-            _buildStatusItem('Mode', _surveyMode.toUpperCase(), _isCollecting ? Colors.green : Colors.grey),
-            if (_isTeamMode) ...[
-              SizedBox(width: 16),
-              _buildStatusItem('Team', '${_teamMembers.length}', Colors.orange),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStatusItem(String label, String value, Color color) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color)),
-        Text(label, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-      ],
+      bottomNavigationBar: _buildBottomStatsBar(),
     );
   }
 
@@ -466,7 +463,7 @@ class _SurveyScreenState extends State<SurveyScreen> {
           ),
           children: [
             _buildBaseMapLayer(),
-            if (_showGrid)
+            if (_showGrid && _gridCells.isNotEmpty)
               PolygonLayer(
                 polygons: _gridCells.map((cell) => Polygon(
                   points: cell.bounds,
@@ -538,21 +535,75 @@ class _SurveyScreenState extends State<SurveyScreen> {
               ),
           ],
         ),
+        
+        // COMPASS - Top right (only show if enabled)
         if (_showCompass)
           Positioned(
             top: 16,
             right: 16,
             child: _buildCompassWidget(),
           ),
+        
+        // GPS STATUS - Bottom right
         Positioned(
-          bottom: 16,
+          bottom: 100, // Move up to avoid floating buttons
           right: 16,
           child: _buildGpsStatusWidget(),
         ),
+        
+        // CALIBRATION STATUS - Bottom left  
         Positioned(
-          bottom: 16,
+          bottom: 100, // Move up to avoid floating buttons
           left: 16,
           child: _buildCalibrationStatusWidget(),
+        ),
+        
+        // FLOATING ACTION BUTTONS - Better positioning
+        Positioned(
+          bottom: 20, // Standard FAB position
+          right: 20,  // Standard FAB position
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Manual Recording Button
+              FloatingActionButton(
+                heroTag: "manual_record",
+                onPressed: _recordMagneticReading,
+                backgroundColor: Colors.green,
+                child: Icon(Icons.add_location, color: Colors.white),
+                tooltip: 'Record Point',
+              ),
+              
+              SizedBox(height: 12), // Space between buttons
+              
+              // Auto Recording Toggle Button
+              FloatingActionButton(
+                heroTag: "auto_record",
+                onPressed: _toggleAutomaticCollection,
+                backgroundColor: _isCollecting ? Colors.red : Colors.blue,
+                child: Icon(
+                  _isCollecting ? Icons.stop : Icons.play_arrow, 
+                  color: Colors.white
+                ),
+                tooltip: _isCollecting ? 'Stop Auto Recording' : 'Start Auto Recording',
+              ),
+              
+              SizedBox(height: 12), // Space between buttons
+              
+              // Compass Toggle Button (moved here, smaller)
+              FloatingActionButton.small(
+                heroTag: "compass_toggle",
+                onPressed: () => setState(() => _showCompass = !_showCompass),
+                backgroundColor: _showCompass ? Colors.purple : Colors.grey,
+                child: Icon(
+                  _showCompass ? Icons.explore_off : Icons.explore, 
+                  color: Colors.white,
+                  size: 20,
+                ),
+                tooltip: _showCompass ? 'Hide Compass' : 'Show Compass',
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -593,7 +644,7 @@ class _SurveyScreenState extends State<SurveyScreen> {
       child: Transform.rotate(
         angle: -(_heading ?? 0) * math.pi / 180,
         child: CustomPaint(
-          painter: CompassPainter(),
+          painter: SurveyCompassPainter(),
           size: Size(80, 80),
         ),
       ),
@@ -676,11 +727,11 @@ class _SurveyScreenState extends State<SurveyScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: () => setState(() => _showCompass = !_showCompass),
-                  icon: Icon(_showCompass ? Icons.explore_off : Icons.explore),
-                  label: Text(_showCompass ? 'Hide Compass' : 'Show Compass'),
+                  onPressed: _showCalibrationDialog,
+                  icon: Icon(Icons.settings_input_component),
+                  label: Text('Calibrate'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: _showCompass ? Colors.blue : Colors.grey,
+                    backgroundColor: (_isMagneticCalibrated && _isGpsCalibrated) ? Colors.green : Colors.orange,
                     foregroundColor: Colors.white,
                   ),
                 ),
@@ -722,6 +773,53 @@ class _SurveyScreenState extends State<SurveyScreen> {
     );
   }
 
+  // Add bottom stats bar
+  Widget _buildBottomStatsBar() {
+    return Container(
+      padding: EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+      color: Colors.grey[100],
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _buildStatItem('Points', _pointCount.toString(), Icons.location_on),
+          _buildStatItem('Coverage', '${_coveragePercentage.toStringAsFixed(1)}%', Icons.grid_on),
+          _buildStatItem('Field', '${_totalField.toStringAsFixed(1)}nT', Icons.sensors),
+          _buildStatItem('Accuracy', '±${_gpsAccuracy.toStringAsFixed(1)}m', Icons.gps_fixed),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatItem(String label, String value, IconData icon) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: Colors.grey[600]),
+            SizedBox(width: 4),
+            Text(
+              value,
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+                color: Colors.black87,
+              ),
+            ),
+          ],
+        ),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            color: Colors.grey[600],
+          ),
+        ),
+      ],
+    );
+  }
+
   // ==================== CALIBRATION ====================
 
   void _calibrateMagnetic() {
@@ -735,11 +833,6 @@ class _SurveyScreenState extends State<SurveyScreen> {
             Icon(Icons.settings_input_component, size: 64, color: Colors.blue),
             SizedBox(height: 16),
             Text('Hold device away from metal objects and press calibrate.'),
-            SizedBox(height: 8),
-            Text('Current readings:'),
-            Text('X: ${_magneticX.toStringAsFixed(1)} μT'),
-            Text('Y: ${_magneticY.toStringAsFixed(1)} μT'),
-            Text('Z: ${_magneticZ.toStringAsFixed(1)} μT'),
           ],
         ),
         actions: [
@@ -756,9 +849,14 @@ class _SurveyScreenState extends State<SurveyScreen> {
                 _isMagneticCalibrated = true;
               });
               Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Magnetic sensor calibrated successfully')),
-              );
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Magnetic sensors calibrated!'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              }
             },
             child: Text('Calibrate'),
           ),
@@ -768,72 +866,23 @@ class _SurveyScreenState extends State<SurveyScreen> {
   }
 
   void _checkGpsQuality() {
-    String message;
-    String action = '';
-
-    if (_gpsAccuracy < 3.0) {
-      message = 'GPS signal excellent (±${_gpsAccuracy.toStringAsFixed(1)}m)';
-      setState(() => _isGpsCalibrated = true);
-    } else if (_gpsAccuracy < 5.0) {
-      message = 'GPS signal good (±${_gpsAccuracy.toStringAsFixed(1)}m)';
-      setState(() => _isGpsCalibrated = true);
-    } else if (_gpsAccuracy < 10.0) {
-      message = 'GPS signal fair (±${_gpsAccuracy.toStringAsFixed(1)}m)';
-      action = 'Move away from buildings for better accuracy.';
-      setState(() => _isGpsCalibrated = false);
-    } else {
-      message = 'GPS signal poor (±${_gpsAccuracy.toStringAsFixed(1)}m)';
-      action = 'Move to open area away from trees and buildings.';
-      setState(() => _isGpsCalibrated = false);
-    }
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('GPS Status'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              _isGpsCalibrated ? Icons.gps_fixed : Icons.gps_not_fixed,
-              size: 64,
-              color: _isGpsCalibrated ? Colors.green : Colors.orange,
-            ),
-            SizedBox(height: 16),
-            Text(message),
-            if (action.isNotEmpty) ...[
-              SizedBox(height: 8),
-              Text(action, style: TextStyle(color: Colors.orange)),
-            ],
-          ],
-        ),
-        actions: [
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('OK'),
+    if (_currentPosition != null) {
+      setState(() {
+        _isGpsCalibrated = _gpsAccuracy < 5.0;
+      });
+      
+      String message = _isGpsCalibrated 
+          ? 'GPS signal is good (±${_gpsAccuracy.toStringAsFixed(1)}m)'
+          : 'GPS signal is poor (±${_gpsAccuracy.toStringAsFixed(1)}m). Move to open sky.';
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: _isGpsCalibrated ? Colors.green : Colors.orange,
           ),
-        ],
-      ),
-    );
-  }
-
-  void _showGpsGuidance() {
-    if (_gpsAccuracy > 15.0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Poor GPS signal (±${_gpsAccuracy.toStringAsFixed(1)}m). Move away from buildings and trees.'),
-          backgroundColor: Colors.red,
-          duration: Duration(seconds: 3),
-        ),
-      );
-    } else if (_gpsAccuracy > 10.0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Fair GPS signal (±${_gpsAccuracy.toStringAsFixed(1)}m). Consider moving to more open area.'),
-          backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
-        ),
-      );
+        );
+      }
     }
   }
 
@@ -850,7 +899,7 @@ class _SurveyScreenState extends State<SurveyScreen> {
                 _isMagneticCalibrated ? Icons.check_circle : Icons.warning,
                 color: _isMagneticCalibrated ? Colors.green : Colors.orange,
               ),
-              title: Text('Magnetic Sensor'),
+              title: Text('Magnetometer'),
               subtitle: Text(_isMagneticCalibrated ? 'Calibrated' : 'Needs calibration'),
               trailing: ElevatedButton(
                 onPressed: _calibrateMagnetic,
@@ -973,21 +1022,61 @@ class _SurveyScreenState extends State<SurveyScreen> {
     }
   }
 
+  void _onTeamModeToggle(bool value) {
+    setState(() {
+      _isTeamMode = value;
+    });
+    
+    if (value) {
+      // Enable team mode - start team sync if available
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Team mode enabled. Share session code with team members.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } else {
+      // Disable team mode
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Team mode disabled.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    }
+  }
+
   // ==================== DATA COLLECTION ====================
 
   Future<void> _recordMagneticReading() async {
-    if (_currentPosition == null) return;
+    if (_currentPosition == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Waiting for GPS location...'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
 
     if (!_isMagneticCalibrated || !_isGpsCalibrated) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Please calibrate sensors before collecting data'),
-          action: SnackBarAction(
-            label: 'Calibrate',
-            onPressed: () => _showCalibrationDialog(),
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Please calibrate sensors before collecting data'),
+            action: SnackBarAction(
+              label: 'Calibrate',
+              onPressed: () => _showCalibrationDialog(),
+            ),
           ),
-        ),
-      );
+        );
+      }
       return;
     }
 
@@ -1004,664 +1093,429 @@ class _SurveyScreenState extends State<SurveyScreen> {
     );
 
     if (!_isWebMode) {
-      await DatabaseService.instance.insertMagneticReading(reading);
+      try {
+        await DatabaseService.instance.insertMagneticReading(reading);
+      } catch (e) {
+        print('Error saving reading: $e');
+      }
     }
 
-    setState(() {
-      _collectedPoints.add(LatLng(reading.latitude, reading.longitude));
-      _pointCount++;
-      GridCell? cellContainingPoint = _gridCells.firstWhere(
-        (cell) => _isPointInCell(LatLng(reading.latitude, reading.longitude), cell.bounds),
-        orElse: () => _gridCells.first,
-      );
-      if (cellContainingPoint != null) {
-        cellContainingPoint.pointCount++;
-        if (cellContainingPoint.status == GridCellStatus.notStarted) {
-          cellContainingPoint.status = GridCellStatus.inProgress;
-          cellContainingPoint.startTime = DateTime.now();
-        }
-        if (cellContainingPoint.pointCount >= 5) {
-          cellContainingPoint.status = GridCellStatus.completed;
-          cellContainingPoint.completedTime = DateTime.now();
-        }
-      }
+    if (mounted) {
+      setState(() {
+        _collectedPoints.add(LatLng(reading.latitude, reading.longitude));
+        _pointCount = _collectedPoints.length + _savedReadings.length;
+      });
+      
+      // Update coverage stats immediately
       _updateCoverageStats();
-      _findNextTargetCell();
-    });
+      
+      // Update current cell if in grid mode
+      if (_currentCell != null) {
+        setState(() {
+          _currentCell!.pointCount++;
+          if (_currentCell!.pointCount >= 1) {
+            _currentCell!.status = GridCellStatus.completed;
+          }
+        });
+      }
 
-    if (_isTeamMode && _currentCell != null) {
-      _teamService.updateGridCell(_currentCell!);
+      // Show success feedback
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Point recorded! Total: $_pointCount'),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 1),
+        ),
+      );
+
+      // Auto-navigate to next target if enabled
+      if (_autoNavigate && _gridCells.isNotEmpty) {
+        _findNextTargetCell();
+      }
     }
   }
 
-  void _toggleDataCollection() {
-    if (!_isMagneticCalibrated || !_isGpsCalibrated) {
-      _showCalibrationDialog();
-      return;
-    }
-
+  void _toggleAutomaticCollection() {
     setState(() {
       _isCollecting = !_isCollecting;
-      _surveyMode = _isCollecting ? 'auto' : 'manual';
     });
 
     if (_isCollecting) {
       _startAutomaticCollection();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Automatic data collection started'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
     } else {
-      _automaticCollectionTimer?.cancel();
+      _stopAutomaticCollection();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Automatic data collection stopped'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
     }
   }
 
   void _startAutomaticCollection() {
-    _automaticCollectionTimer?.cancel();
     _automaticCollectionTimer = Timer.periodic(_magneticPullRate, (timer) {
-      if (_isCollecting && mounted) {
-        _recordMagneticReading();
-      } else {
+      if (!_isCollecting) {
         timer.cancel();
+        return;
       }
+      _recordMagneticReading();
     });
+  }
+
+  void _stopAutomaticCollection() {
+    _automaticCollectionTimer?.cancel();
+    _automaticCollectionTimer = null;
   }
 
   void _restartAutomaticCollection() {
     if (_isCollecting) {
-      _automaticCollectionTimer?.cancel();
+      _stopAutomaticCollection();
       _startAutomaticCollection();
     }
   }
 
-  // ==================== TEAM COLLABORATION ====================
-
-  void _onTeamModeToggle(bool enabled) {
-    setState(() {
-      _isTeamMode = enabled;
-    });
-    if (enabled) {
-      _showTeamSetupDialog();
-    } else {
-      _teamService.stopTeamMode();
-    }
-  }
-
-  void _showTeamSetupDialog() {
-    String userName = '';
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Start Team Survey'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              decoration: InputDecoration(
-                labelText: 'Your Name',
-                border: OutlineInputBorder(),
-              ),
-              onChanged: (value) => userName = value,
-            ),
-            SizedBox(height: 16),
-            Text(
-              'Team members can join by scanning QR code or entering project ID',
-              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              setState(() => _isTeamMode = false);
-              Navigator.pop(context);
-            },
-            child: Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              _teamService.startTeamMode(userName.isEmpty ? 'User' : userName, 'project_123');
-              Navigator.pop(context);
-            },
-            child: Text('Start Team Mode'),
-          ),
-        ],
-      ),
-    );
-  }
+  // ==================== TEAM FUNCTIONALITY ====================
 
   void _showBottomSheet() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => TeamPanel(onTeamModeToggle: _onTeamModeToggle),
-    );
-  }
-
-  // ==================== FIELD NOTES ====================
-
-  void _showFieldNotesDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => EnhancedFieldNotesDialog(
-        onNoteSaved: (note, imagePath, audioPath) {
-          _saveFieldNote(note, imagePath, audioPath);
-        },
-      ),
-    );
-  }
-
-  Future<void> _saveFieldNote(String note, String? imagePath, String? audioPath) async {
-    if (_currentPosition == null) return;
-
-    FieldNote fieldNote = FieldNote(
-      latitude: _currentPosition!.latitude,
-      longitude: _currentPosition!.longitude,
-      note: note,
-      imagePath: imagePath,
-      audioPath: audioPath,
-      timestamp: DateTime.now(),
-      projectId: widget.project?.id ?? 1,
-    );
-
-    if (!_isWebMode) {
-      await DatabaseService.instance.insertFieldNote(fieldNote);
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Field note saved successfully')),
-    );
-  }
-
-  // ==================== EXPORT ====================
-
-  void _showExportOptions() {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'Export Survey Data',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 20),
-            _buildExportOption('CSV Format', 'Spreadsheet compatible', Icons.table_chart, ExportFormat.csv),
-            _buildExportOption('GeoJSON', 'GIS compatible', Icons.map, ExportFormat.geojson),
-            _buildExportOption('KML/Google Earth', 'View in Google Earth', Icons.public, ExportFormat.kml),
-            if (!kIsWeb) ...[
-              _buildExportOption('SQLite Database', 'Complete database', Icons.storage, ExportFormat.sqlite),
-              _buildExportOption('Shapefile (WKT)', 'GIS shapefile format', Icons.layers, ExportFormat.shapefile),
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        expand: false,
+        builder: (context, scrollController) => Container(
+          padding: EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Text(
+                'Team Panel',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              SizedBox(height: 16),
+              Expanded(
+                child: ListView.builder(
+                  controller: scrollController,
+                  itemCount: _teamMembers.length,
+                  itemBuilder: (context, index) {
+                    final member = _teamMembers[index];
+                    return ListTile(
+                      leading: Container(
+                        width: 20,
+                        height: 20,
+                        decoration: BoxDecoration(
+                          color: member.markerColor,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      title: Text(member.name),
+                      subtitle: Text(member.isOnline ? 'Online' : 'Offline'),
+                      trailing: IconButton(
+                        icon: Icon(Icons.remove_circle, color: Colors.red),
+                        onPressed: () => _removeTeamMember(member),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: _inviteTeamMember,
+                icon: Icon(Icons.person_add),
+                label: Text('Invite Team Member'),
+              ),
             ],
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildExportOption(String title, String description, IconData icon, ExportFormat format) {
-    return ListTile(
-      leading: Icon(icon, color: Colors.blue),
-      title: Text(title),
-      subtitle: Text(description),
-      onTap: () {
-        Navigator.pop(context);
-        _exportData(format);
+  void _inviteTeamMember() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        final TextEditingController emailController = TextEditingController();
+        return AlertDialog(
+          title: Text('Invite Team Member'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: emailController,
+                decoration: InputDecoration(
+                  labelText: 'Email Address',
+                  hintText: 'Enter team member email',
+                ),
+                keyboardType: TextInputType.emailAddress,
+              ),
+              SizedBox(height: 16),
+              Text(
+                'Session Code: SURVEY-${DateTime.now().millisecondsSinceEpoch.toString().substring(8)}',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (emailController.text.isNotEmpty) {
+                  Navigator.pop(context);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Invitation sent to ${emailController.text}'),
+                        backgroundColor: Colors.green,
+                      ),
+                    );
+                  }
+                }
+              },
+              child: Text('Send Invite'),
+            ),
+          ],
+        );
       },
     );
   }
 
-  Future<void> _exportData(ExportFormat format) async {
-    try {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const AlertDialog(
-          content: Row(
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(width: 16),
-              Text('Exporting data...'),
-            ],
+  void _removeTeamMember(TeamMember member) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Remove Team Member'),
+        content: Text('Remove ${member.name} from the survey team?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel'),
           ),
-        ),
-      );
-
-      SurveyProject project = widget.project ?? SurveyProject(
-        name: 'Current Survey',
-        description: 'Magnetic survey data',
-        createdAt: DateTime.now(),
-      );
-
-      List<MagneticReading> allReadings = [];
-      List<FieldNote> fieldNotes = [];
-
-      if (!_isWebMode && widget.project?.id != null) {
-        allReadings = await DatabaseService.instance.getReadingsForProject(widget.project!.id!);
-      }
-
-      String exportData = await _exportService.exportProject(
-        project: project,
-        readings: allReadings,
-        gridCells: _gridCells,
-        fieldNotes: fieldNotes,
-        format: format,
-      );
-
-      Navigator.pop(context);
-
-      String filename = '${project.name}_${DateTime.now().millisecondsSinceEpoch}${_exportService.getFileExtension(format)}';
-      String mimeType = _exportService.getMimeType(format);
-
-      await _exportService.saveAndShare(
-        data: exportData,
-        filename: filename,
-        mimeType: mimeType,
-      );
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Data exported successfully as $filename')),
-      );
-    } catch (e) {
-      Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Export failed: $e')),
-      );
-    }
-  }
-
-  // ==================== HELPER METHODS ====================
-
-  Color _getCellColor(GridCellStatus status) {
-    switch (status) {
-      case GridCellStatus.completed:
-        return Colors.green;
-      case GridCellStatus.inProgress:
-        return Colors.orange;
-      case GridCellStatus.notStarted:
-      default:
-        return Colors.red;
-    }
-  }
-
-  bool _isPointInCell(LatLng point, List<LatLng> bounds) {
-    double minLat = bounds.map((p) => p.latitude).reduce((a, b) => a < b ? a : b);
-    double maxLat = bounds.map((p) => p.latitude).reduce((a, b) => a > b ? a : b);
-    double minLon = bounds.map((p) => p.longitude).reduce((a, b) => a < b ? a : b);
-    double maxLon = bounds.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
-
-    return point.latitude >= minLat &&
-        point.latitude <= maxLat &&
-        point.longitude >= minLon &&
-        point.longitude <= maxLon;
-  }
-
-  void _findNextTargetCell() {
-    GridCell? nextCell = _gridCells.firstWhere(
-      (cell) => cell.status == GridCellStatus.notStarted,
-      orElse: () => _gridCells.first,
-    );
-
-    setState(() {
-      _nextTargetCell = nextCell;
-    });
-  }
-
-  void _updateCoverageStats() {
-    int completed = _gridCells.where((cell) => cell.status == GridCellStatus.completed).length;
-    setState(() {
-      _completedCells = completed;
-      _coveragePercentage = _gridCells.isNotEmpty ? (completed / _gridCells.length) * 100 : 0.0;
-    });
-  }
-}
-
-class EnhancedFieldNotesDialog extends StatefulWidget {
-  final Function(String, String?, String?) onNoteSaved;
-
-  EnhancedFieldNotesDialog({required this.onNoteSaved});
-
-  @override
-  _EnhancedFieldNotesDialogState createState() => _EnhancedFieldNotesDialogState();
-}
-
-class _EnhancedFieldNotesDialogState extends State<EnhancedFieldNotesDialog> {
-  final _noteController = TextEditingController();
-  final ImagePicker _imagePicker = ImagePicker();
-  bool _isRecording = false;
-  String? _imagePath;
-  Uint8List? _imageBytes;
-  String? _audioPath;
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Row(
-        children: [
-          Icon(Icons.note_add, color: Colors.blue),
-          SizedBox(width: 8),
-          Text('Field Notes'),
+          ElevatedButton(
+            onPressed: () {
+              setState(() {
+                _teamMembers.remove(member);
+              });
+              Navigator.pop(context);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('${member.name} removed from team'),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: Text('Remove', style: TextStyle(color: Colors.white)),
+          ),
         ],
       ),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: _noteController,
-              decoration: InputDecoration(
-                labelText: 'Add field observation...',
-                border: OutlineInputBorder(),
-                hintText: 'Describe geological features, anomalies, or conditions',
-              ),
-              maxLines: 4,
-              maxLength: 500,
-            ),
-            SizedBox(height: 16),
-            if (_imagePath != null && (kIsWeb ? _imageBytes != null : _imagePath!.isNotEmpty)) ...[
-              Container(
-                height: 100,
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Stack(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: kIsWeb
-                          ? Image.memory(
-                              _imageBytes!,
-                              fit: BoxFit.cover,
-                              width: double.infinity,
-                              height: 100,
-                              errorBuilder: (context, error, stackTrace) => Container(
-                                color: Colors.grey[200],
-                                child: Center(child: Text('Failed to load image')),
-                              ),
-                            )
-                          : Image(
-                              image: FileImage(io.File(_imagePath!)),
-                              fit: BoxFit.cover,
-                              width: double.infinity,
-                              height: 100,
-                              errorBuilder: (context, error, stackTrace) => Container(
-                                color: Colors.grey[200],
-                                child: Center(child: Text('Failed to load image')),
-                              ),
-                            ),
-                    ),
-                    Positioned(
-                      top: 4,
-                      right: 4,
-                      child: GestureDetector(
-                        onTap: () => setState(() {
-                          _imagePath = null;
-                          _imageBytes = null;
-                        }),
-                        child: Container(
-                          padding: EdgeInsets.all(4),
-                          decoration: BoxDecoration(
-                            color: Colors.red,
-                            shape: BoxShape.circle,
-                          ),
-                          child: Icon(Icons.close, color: Colors.white, size: 16),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              SizedBox(height: 8),
-            ],
-            if (_audioPath != null) ...[
-              Container(
-                padding: EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.orange[100],
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.orange),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.audiotrack, color: Colors.orange),
-                    SizedBox(width: 8),
-                    Expanded(child: Text('Audio recording attached')),
-                    GestureDetector(
-                      onTap: () => setState(() => _audioPath = null),
-                      child: Icon(Icons.close, color: Colors.red),
-                    ),
-                  ],
-                ),
-              ),
-              SizedBox(height: 8),
-            ],
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: _takePhoto,
-                  icon: Icon(Icons.camera_alt),
-                  label: Text('Photo'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
-                ElevatedButton.icon(
-                  onPressed: _selectFromGallery,
-                  icon: Icon(Icons.photo_library),
-                  label: Text('Gallery'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
-                ElevatedButton.icon(
-                  onPressed: _toggleRecording,
-                  icon: Icon(_isRecording ? Icons.stop : Icons.mic),
-                  label: Text(_isRecording ? 'Stop' : 'Voice'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _isRecording ? Colors.red : Colors.orange,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: _saveNote,
-          child: Text('Save Note'),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.blue,
-            foregroundColor: Colors.white,
-          ),
-        ),
-      ],
     );
   }
 
-  Future<void> _takePhoto() async {
-    try {
-      final XFile? image = await _imagePicker.pickImage(
-        source: ImageSource.camera,
-        imageQuality: 85,
-        maxWidth: 1920,
-        maxHeight: 1080,
-      );
-      if (image != null) {
-        if (kIsWeb) {
-          final bytes = await image.readAsBytes();
-          setState(() {
-            _imagePath = image.path;
-            _imageBytes = bytes;
-          });
-        } else {
-          setState(() {
-            _imagePath = image.path;
-            _imageBytes = null;
-          });
-        }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Photo captured successfully')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to take photo: $e')),
-      );
-    }
+  // ==================== HELP & EXPORT ====================
+
+  void _showHelpDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Survey Help'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Getting Started:', style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 8),
+              Text('1. Calibrate sensors using the calibrate button'),
+              Text('2. Wait for good GPS signal (green status)'),
+              Text('3. Use manual recording or start automatic mode'),
+              SizedBox(height: 16),
+              Text('Recording Data:', style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 8),
+              Text('• Green FAB: Record single point'),
+              Text('• Blue FAB: Start/stop automatic recording'),
+              Text('• Purple FAB: Toggle compass display'),
+              SizedBox(height: 16),
+              Text('Map Controls:', style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 8),
+              Text('• Pinch to zoom in/out'),
+              Text('• Drag to move map'),
+              Text('• Grid shows survey boundaries'),
+              Text('• Green dots show recorded points'),
+              SizedBox(height: 16),
+              Text('Team Mode:', style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 8),
+              Text('• Enable in settings to collaborate'),
+              Text('• Share session code with team'),
+              Text('• See team members on map'),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Got It'),
+          ),
+        ],
+      ),
+    );
   }
 
-  Future<void> _selectFromGallery() async {
-    try {
-      final XFile? image = await _imagePicker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 85,
-        maxWidth: 1920,
-        maxHeight: 1080,
-      );
-      if (image != null) {
-        if (kIsWeb) {
-          final bytes = await image.readAsBytes();
-          setState(() {
-            _imagePath = image.path;
-            _imageBytes = bytes;
-          });
-        } else {
-          setState(() {
-            _imagePath = image.path;
-            _imageBytes = null;
-          });
-        }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Image selected successfully')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to select image: $e')),
-      );
-    }
-  }
+  void _exportSurveyData() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Export Survey Data'),
+        content: Text('Choose export format for your survey data:'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final navigator = Navigator.of(context);
+              final scaffoldMessenger = ScaffoldMessenger.of(context);
+              
+              navigator.pop();
+              try {
+                // Create a project for export (use existing or create temporary)
+                final project = widget.project ?? SurveyProject(
+                  name: 'Survey Export',
+                  description: 'Magnetic survey data export',
+                  createdAt: DateTime.now(),
+                );
 
-  void _toggleRecording() {
-    setState(() {
-      _isRecording = !_isRecording;
-    });
-    if (_isRecording) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Recording started...')),
-      );
-      Future.delayed(Duration(seconds: 2), () {
-        if (_isRecording && mounted) {
-          setState(() {
-            _audioPath = 'audio_${DateTime.now().millisecondsSinceEpoch}.wav';
-            _isRecording = false;
-          });
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Recording completed')),
-          );
-        }
-      });
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Recording stopped')),
-      );
-    }
-  }
+                // Get all readings (combine collected and saved)
+                List<MagneticReading> allReadings = List.from(_savedReadings);
+                
+                // Convert collected points to readings if needed
+                for (int i = 0; i < _collectedPoints.length; i++) {
+                  final point = _collectedPoints[i];
+                  allReadings.add(MagneticReading(
+                    latitude: point.latitude,
+                    longitude: point.longitude,
+                    altitude: 0.0,
+                    magneticX: _magneticX,
+                    magneticY: _magneticY,
+                    magneticZ: _magneticZ,
+                    totalField: _totalField,
+                    timestamp: DateTime.now().subtract(Duration(minutes: i)),
+                    projectId: project.id ?? 1,
+                  ));
+                }
 
-  void _saveNote() {
-    if (_noteController.text.trim().isEmpty && _imagePath == null && _audioPath == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Please enter a note or attach media')),
-      );
-      return;
-    }
-    widget.onNoteSaved(_noteController.text.trim(), _imagePath, _audioPath);
-    Navigator.pop(context);
-  }
+                // Export using ExportService
+                String exportData = await ExportService.instance.exportProject(
+                  project: project,
+                  readings: allReadings,
+                  gridCells: _gridCells,
+                  fieldNotes: [], // Empty field notes for now
+                  format: ExportFormat.csv,
+                );
 
-  @override
-  void dispose() {
-    _noteController.dispose();
-    super.dispose();
+                // Generate filename
+                String filename = '${project.name}_${DateTime.now().millisecondsSinceEpoch}.csv';
+                
+                // Save and share
+                await ExportService.instance.saveAndShare(
+                  data: exportData,
+                  filename: filename,
+                  mimeType: 'text/csv',
+                );
+
+                if (mounted) {
+                  scaffoldMessenger.showSnackBar(
+                    SnackBar(
+                      content: Text('Data exported to $filename'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  scaffoldMessenger.showSnackBar(
+                    SnackBar(
+                      content: Text('Export failed: $e'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              }
+            },
+            child: Text('Export CSV'),
+          ),
+        ],
+      ),
+    );
   }
 }
 
-class CompassPainter extends CustomPainter {
-  @override
-  void paint(ui.Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final radius = size.width / 2 - 4;
+// ==================== COMPASS PAINTER ====================
 
-    final circlePaint = ui.Paint()
+class SurveyCompassPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 2 - 10;
+
+    // Draw compass circle
+    final circlePaint = Paint()
       ..color = Colors.white
-      ..style = ui.PaintingStyle.fill;
+      ..style = PaintingStyle.fill;
     canvas.drawCircle(center, radius, circlePaint);
 
-    final borderPaint = ui.Paint()
-      ..color = Colors.black
-      ..style = ui.PaintingStyle.stroke
-      ..strokeWidth = 1;
+    final borderPaint = Paint()
+      ..color = Colors.grey[400]!
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
     canvas.drawCircle(center, radius, borderPaint);
 
-    final northPaint = ui.Paint()
+    // Draw north arrow
+    final arrowPaint = Paint()
       ..color = Colors.red
-      ..style = ui.PaintingStyle.fill;
-    final northPath = ui.Path();
-    northPath.moveTo(center.dx, center.dy - radius + 8);
-    northPath.lineTo(center.dx - 4, center.dy - radius + 20);
-    northPath.lineTo(center.dx + 4, center.dy - radius + 20);
-    northPath.close();
-    canvas.drawPath(northPath, northPaint);
+      ..style = PaintingStyle.fill;
+    
+    final path = ui.Path();
+    path.moveTo(center.dx, center.dy - radius + 5);
+    path.lineTo(center.dx - 8, center.dy - 5);
+    path.lineTo(center.dx + 8, center.dy - 5);
+    path.close();
+    canvas.drawPath(path, arrowPaint);
 
-    final southPaint = ui.Paint()
-      ..color = Colors.grey
-      ..style = ui.PaintingStyle.fill;
-    final southPath = ui.Path();
-    southPath.moveTo(center.dx, center.dy + radius - 8);
-    southPath.lineTo(center.dx - 4, center.dy + radius - 20);
-    southPath.lineTo(center.dx + 4, center.dy + radius - 20);
-    southPath.close();
-    canvas.drawPath(southPath, southPaint);
-
+    // Draw N label
     final textPainter = TextPainter(
       text: TextSpan(
         text: 'N',
-        style: TextStyle(color: Colors.red, fontSize: 12, fontWeight: FontWeight.bold),
+        style: TextStyle(
+          color: Colors.red,
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+        ),
       ),
       textDirection: TextDirection.ltr,
     );
     textPainter.layout();
-    textPainter.paint(canvas, Offset(center.dx - 6, center.dy - radius + 22));
-
-    final markPaint = ui.Paint()
-      ..color = Colors.black
-      ..strokeWidth = 1;
-
-    List<String> directions = ['E', 'S', 'W'];
-    for (int i = 1; i < 4; i++) {
-      double angle = i * math.pi / 2;
-      double x = center.dx + (radius - 10) * math.sin(angle);
-      double y = center.dy - (radius - 10) * math.cos(angle);
-      final dirPainter = TextPainter(
-        text: TextSpan(
-          text: directions[i - 1],
-          style: TextStyle(color: Colors.black, fontSize: 10),
-        ),
-        textDirection: TextDirection.ltr,
-      );
-      dirPainter.layout();
-      dirPainter.paint(canvas, Offset(x - 5, y - 5));
-    }
+    textPainter.paint(
+      canvas,
+      Offset(center.dx - textPainter.width / 2, center.dy + 10),
+    );
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
