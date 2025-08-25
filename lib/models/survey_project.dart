@@ -4,7 +4,7 @@ class SurveyProject {
   final String description;
   final DateTime createdAt;
   final double? gridSpacing;
-  final String? gridBounds;
+  final String? boundaryPoints; // Changed from gridBounds to boundaryPoints
 
   SurveyProject({
     this.id,
@@ -12,7 +12,7 @@ class SurveyProject {
     required this.description,
     required this.createdAt,
     this.gridSpacing,
-    this.gridBounds,
+    this.boundaryPoints, // Updated parameter name
   });
 
   Map<String, dynamic> toMap() {
@@ -22,7 +22,7 @@ class SurveyProject {
       'description': description,
       'createdAt': createdAt.toIso8601String(),
       'gridSpacing': gridSpacing,
-      'gridBounds': gridBounds,
+      'boundaryPoints': boundaryPoints, // Updated to match database column
     };
   }
 
@@ -33,7 +33,7 @@ class SurveyProject {
       description: map['description'],
       createdAt: DateTime.parse(map['createdAt']),
       gridSpacing: map['gridSpacing'],
-      gridBounds: map['gridBounds'],
+      boundaryPoints: map['boundaryPoints'], // Updated to match database column
     );
   }
 }

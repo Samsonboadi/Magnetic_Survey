@@ -1,9 +1,11 @@
+// lib/main.dart (Updated with Grid Management)
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'screens/survey_screen.dart';
 import 'screens/project_manager_screen.dart';
-import 'screens/grid_import_screen.dart';
+import 'screens/grid_import_screen.dart';  // Add this import
+import 'models/survey_project.dart';
 import 'services/database_service.dart';
 
 void main() async {
@@ -12,9 +14,28 @@ void main() async {
   // Only initialize database on mobile platforms
   if (!kIsWeb) {
     await DatabaseService.instance.initDatabase();
+    
+    // Request permissions
+    await _requestPermissions();
   }
   
   runApp(MagneticSurveyApp());
+}
+
+Future<void> _requestPermissions() async {
+  Map<Permission, PermissionStatus> permissions = await [
+    Permission.location,
+    Permission.locationWhenInUse,
+    Permission.camera,
+    Permission.storage,
+    Permission.microphone,
+  ].request();
+  
+  // Check if essential permissions are granted
+  if (permissions[Permission.location] != PermissionStatus.granted &&
+      permissions[Permission.locationWhenInUse] != PermissionStatus.granted) {
+    print('Location permission is required for this app');
+  }
 }
 
 class MagneticSurveyApp extends StatelessWidget {
@@ -25,6 +46,11 @@ class MagneticSurveyApp extends StatelessWidget {
       theme: ThemeData(
         primarySwatch: Colors.blue,
         visualDensity: VisualDensity.adaptivePlatformDensity,
+        appBarTheme: AppBarTheme(
+          backgroundColor: Colors.blue[800],
+          foregroundColor: Colors.white,
+          elevation: 4,
+        ),
       ),
       home: HomeScreen(),
     );
@@ -45,6 +71,38 @@ class HomeScreen extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            // App logo/header
+            Container(
+              padding: EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.blue[50],
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Column(
+                children: [
+                  Icon(Icons.compass_calibration, size: 64, color: Colors.blue[800]),
+                  SizedBox(height: 8),
+                  Text(
+                    'TerraMag Field',
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blue[800],
+                    ),
+                  ),
+                  Text(
+                    'Professional Magnetic Survey Collection',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            SizedBox(height: 32),
+            
             // Web warning
             if (kIsWeb)
               Container(
@@ -69,46 +127,93 @@ class HomeScreen extends StatelessWidget {
                 ),
               ),
             
+            // Menu options
             Card(
               elevation: 4,
               child: ListTile(
-                leading: Icon(Icons.add_location, color: Colors.green),
-                title: Text('New Survey'),
-                subtitle: Text('Start collecting magnetic data'),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => SurveyScreen()),
-                ),
+                leading: Icon(Icons.add_location, color: Colors.green, size: 32),
+                title: Text('New Survey', style: TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text('Start collecting magnetic field data'),
+                trailing: Icon(Icons.arrow_forward_ios),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => SurveyScreen(
+                        project: SurveyProject(
+                          name: 'Quick Survey ${DateTime.now().day}/${DateTime.now().month}',
+                          description: 'New magnetic survey',
+                          createdAt: DateTime.now(),
+                        ),
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
-            SizedBox(height: 16),
+            
+            SizedBox(height: 12),
+            
             Card(
               elevation: 4,
               child: ListTile(
-                leading: Icon(Icons.folder, color: Colors.orange),
-                title: Text('Manage Projects'),
-                subtitle: Text('View and export collected data'),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => ProjectManagerScreen()),
-                ),
+                leading: Icon(Icons.folder, color: Colors.blue, size: 32),
+                title: Text('Project Manager', style: TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text('Manage existing survey projects'),
+                trailing: Icon(Icons.arrow_forward_ios),
+                onTap: () {
+                  if (kIsWeb) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Project Manager requires mobile app')),
+                    );
+                  } else {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => ProjectManagerScreen()),
+                    );
+                  }
+                },
               ),
             ),
-            SizedBox(height: 16),
+            
+            SizedBox(height: 12),
+            
+            // NEW: Grid Management Card
             Card(
               elevation: 4,
               child: ListTile(
-                leading: Icon(Icons.grid_on, color: Colors.purple),
-                title: Text('Import Grid'),
-                subtitle: Text('Load survey grid from file'),
+                leading: Icon(Icons.grid_on, color: Colors.purple, size: 32),
+                title: Text('Grid Management', style: TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text('Create and import survey grids'),
+                trailing: Icon(Icons.arrow_forward_ios),
                 onTap: () => _importGrid(context),
               ),
             ),
             
-            // Platform info
-            SizedBox(height: 20),
+            SizedBox(height: 12),
+            
+            Card(
+              elevation: 4,
+              child: ListTile(
+                leading: Icon(Icons.settings, color: Colors.grey[700], size: 32),
+                title: Text('App Settings', style: TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text('Configure app preferences'),
+                trailing: Icon(Icons.arrow_forward_ios),
+                onTap: () {
+                  _showAppSettings(context);
+                },
+              ),
+            ),
+            
+            SizedBox(height: 32),
+            
+            // App info
             Text(
-              kIsWeb ? 'Running on: Web Browser' : 'Running on: Mobile Device',
+              'Version 1.0.0',
+              style: TextStyle(color: Colors.grey[600], fontSize: 12),
+            ),
+            Text(
+              'Professional magnetic survey data collection',
               style: TextStyle(color: Colors.grey[600], fontSize: 12),
             ),
           ],
@@ -117,9 +222,10 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
+  // NEW: Grid import method
   void _importGrid(BuildContext context) {
     if (kIsWeb) {
-      // Show web demo dialog
+      // Enhanced web demo dialog with map creation option
       showDialog(
         context: context,
         builder: (context) => AlertDialog(
@@ -127,19 +233,72 @@ class HomeScreen extends StatelessWidget {
             children: [
               Icon(Icons.grid_on, color: Colors.purple),
               SizedBox(width: 8),
-              Text('Import Grid'),
+              Text('Grid Management'),
             ],
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Grid import supports these formats:'),
+              Text('Grid creation and import options:'),
+              SizedBox(height: 12),
+              
+              // Create with Map option
+              Container(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => GridImportScreen()),
+                    );
+                  },
+                  icon: Icon(Icons.map),
+                  label: Text('Create with Map'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green[800],
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ),
+              
               SizedBox(height: 8),
-              Text('• KML/KMZ files'),
-              Text('• GeoJSON files'),
-              Text('• CSV with coordinates'),
-              Text('• Shapefile (.shp)'),
+              
+              // Import File option  
+              Container(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => GridImportScreen()),
+                    );
+                  },
+                  icon: Icon(Icons.upload_file),
+                  label: Text('Import Grid File'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue[800],
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ),
+              
+              SizedBox(height: 16),
+              
+              Text('Supported formats:'),
+              SizedBox(height: 8),
+              Wrap(
+                spacing: 4,
+                children: [
+                  Chip(label: Text('KML/KMZ'), backgroundColor: Colors.green[100]),
+                  Chip(label: Text('GeoJSON'), backgroundColor: Colors.blue[100]),
+                  Chip(label: Text('CSV'), backgroundColor: Colors.orange[100]),
+                  Chip(label: Text('Shapefile'), backgroundColor: Colors.purple[100]),
+                ],
+              ),
+              
               SizedBox(height: 16),
               Container(
                 padding: EdgeInsets.all(12),
@@ -147,9 +306,20 @@ class HomeScreen extends StatelessWidget {
                   color: Colors.blue[50],
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Text(
-                  'Demo Mode: File import is available on mobile devices. You can draw grids directly in the survey screen.',
-                  style: TextStyle(color: Colors.blue[700], fontSize: 12),
+                child: Row(
+                  children: [
+                    Icon(Icons.info, color: Colors.blue[700], size: 20),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Enhanced grid creation with map visualization now available!',
+                        style: TextStyle(
+                          fontSize: 12, 
+                          color: Colors.blue[700],
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -159,29 +329,158 @@ class HomeScreen extends StatelessWidget {
               onPressed: () => Navigator.pop(context),
               child: Text('Close'),
             ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => GridImportScreen()),
-                );
-              },
-              child: Text('View Grid Tools'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.purple[800],
-                foregroundColor: Colors.white,
-              ),
-            ),
           ],
         ),
       );
     } else {
-      // Navigate to grid import screen for mobile
+      // Navigate directly to grid import screen for mobile
       Navigator.push(
         context,
         MaterialPageRoute(builder: (context) => GridImportScreen()),
       );
     }
+  }
+
+  void _showAppSettings(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('App Settings'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(Icons.info_outline),
+              title: Text('About'),
+              subtitle: Text('TerraMag Field v1.0'),
+              onTap: () {
+                Navigator.pop(context);
+                _showAboutDialog(context);
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.security),
+              title: Text('Permissions'),
+              subtitle: Text('Manage app permissions'),
+              onTap: () {
+                Navigator.pop(context);
+                _showPermissionsDialog(context);
+              },
+            ),
+            if (!kIsWeb)
+              ListTile(
+                leading: Icon(Icons.storage),
+                title: Text('Data Storage'),
+                subtitle: Text('Manage local data'),
+                onTap: () {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Data stored in app documents folder')),
+                  );
+                },
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showAboutDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('About TerraMag Field'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('TerraMag Field v1.0', style: TextStyle(fontWeight: FontWeight.bold)),
+            SizedBox(height: 8),
+            Text('Professional magnetic survey data collection app for field geophysics.'),
+            SizedBox(height: 16),
+            Text('Features:', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('• Real-time magnetic field measurement'),
+            Text('• GPS coordinate tracking'),
+            Text('• Team collaboration'),
+            Text('• Visual survey grid creation'),  // Updated
+            Text('• Data export (CSV, GeoJSON, KML)'),
+            Text('• Field notes with photos'),
+            Text('• Compass and navigation'),
+            SizedBox(height: 16),
+            Text('Requires device with magnetometer and GPS.'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showPermissionsDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Required Permissions'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('This app requires the following permissions:', style: TextStyle(fontWeight: FontWeight.bold)),
+            SizedBox(height: 12),
+            _buildPermissionItem(Icons.location_on, 'Location', 'For GPS coordinates'),
+            _buildPermissionItem(Icons.camera_alt, 'Camera', 'For field photos'),
+            _buildPermissionItem(Icons.storage, 'Storage', 'For saving data'),
+            _buildPermissionItem(Icons.mic, 'Microphone', 'For voice notes'),
+            SizedBox(height: 12),
+            Text('You can manage these in your device settings.', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Close'),
+          ),
+          if (!kIsWeb)
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                openAppSettings();
+              },
+              child: Text('Open Settings'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPermissionItem(IconData icon, String title, String description) {
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: Colors.blue),
+          SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: TextStyle(fontWeight: FontWeight.w500)),
+                Text(description, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
