@@ -252,17 +252,38 @@ class _SurveyScreenState extends State<SurveyScreen> {
             });
             
             // Auto-center map on location updates if needed
-            if (_autoNavigate) {
-              try {
-                _mapController.move(
-                  LatLng(position.latitude, position.longitude), 
-                  _mapController.camera.zoom
-                );
-              } catch (e) {
-                // Map controller not ready yet, that's fine
-                print('Map controller not ready for auto-navigation: $e');
+              // Improved auto-center logic that considers grid context
+              if (_autoNavigate) {
+                try {
+                  LatLng currentLocation = LatLng(position.latitude, position.longitude);
+                  
+                  // If we have a grid and user is within reasonable distance, don't auto-center
+                  if (_gridCells.isNotEmpty && widget.gridCenter != null) {
+                    double distanceToGrid = Geolocator.distanceBetween(
+                      position.latitude, position.longitude,
+                      widget.gridCenter!.latitude, widget.gridCenter!.longitude
+                    );
+                    
+                    // Only auto-center if user is far from the grid (> 500m)
+                    if (distanceToGrid > 500) {
+                      // Zoom to show both user location and grid
+                      LatLngBounds bounds = LatLngBounds.fromPoints([
+                        currentLocation,
+                        widget.gridCenter!
+                      ]);
+                      _mapController.fitCamera(CameraFit.bounds(bounds: bounds, padding: EdgeInsets.all(50)));
+                    } else {
+                      // User is near the grid, just update position but keep current view
+                      // The position marker will update but don't move the map
+                    }
+                  } else {
+                    // No grid context, normal auto-center behavior
+                    _mapController.move(currentLocation, _mapController.camera.zoom);
+                  }
+                } catch (e) {
+                  print('Map controller not ready for auto-navigation: $e');
+                }
               }
-            }
             
             if (_isTeamMode) {
               _teamService.updateMyPosition(
@@ -1853,8 +1874,11 @@ Future<void> _calibrateGpsWithAnimation(StateSetter setDialogState) async {
 
       // Generate filename
       String extension = ExportService.instance.getFileExtension(format);
-      String filename = '${project.name}_${DateTime.now().millisecondsSinceEpoch}$extension';
-      
+      String sanitizedProjectName = project.name
+            .replaceAll(' ', '_')
+            .replaceAll(RegExp(r'[^\w\-_]'), '');
+      String filename = '${sanitizedProjectName}_${DateTime.now().millisecondsSinceEpoch}$extension';
+              
       // Save and share
       await ExportService.instance.saveAndShare(
         data: exportData,

@@ -428,14 +428,36 @@ class ExportService {
   Future<void> _saveForMobile(String data, String filename, String mimeType) async {
     try {
       final directory = await getApplicationDocumentsDirectory();
-      final file = File('${directory.path}/$filename');
+      
+      // Sanitize filename to prevent path issues
+      String sanitizedFilename = filename
+          .replaceAll(' ', '_')           // Replace spaces with underscores
+          .replaceAll(RegExp(r'[^\w\-_\.]'), '') // Remove special characters except dash, underscore, dot
+          .replaceAll(RegExp(r'_{2,}'), '_');    // Replace multiple underscores with single
+      
+      // Ensure we have a valid extension
+      if (!sanitizedFilename.contains('.')) {
+        sanitizedFilename += '.csv'; // Default extension
+      }
+      
+      final file = File('${directory.path}/$sanitizedFilename');
+      
+      // Ensure directory exists
+      await file.parent.create(recursive: true);
+      
+      // Write file with error handling
       await file.writeAsString(data, encoding: utf8);
       
-      // Share the file
-      await Share.shareXFiles(
-        [XFile(file.path)],
-        text: 'Survey data exported: $filename',
-      );
+      // Verify file was created before sharing
+      if (await file.exists()) {
+        // Share the file
+        await Share.shareXFiles(
+          [XFile(file.path)],
+          text: 'Survey data exported: $sanitizedFilename',
+        );
+      } else {
+        throw Exception('File was not created successfully');
+      }
     } catch (e) {
       throw Exception('Failed to save and share file: $e');
     }
