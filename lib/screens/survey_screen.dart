@@ -14,6 +14,11 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+
+import 'dart:io';
+import 'package:share_plus/share_plus.dart';
+
+
 import '../models/magnetic_reading.dart';
 import '../models/survey_project.dart';
 import '../models/grid_cell.dart';
@@ -108,6 +113,8 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
   // Services
   final TeamSyncService _teamService = TeamSyncService.instance;
 
+
+
   @override
   void initState() {
     super.initState();
@@ -125,6 +132,33 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     }
   }
 
+
+  void _initializeMapWithDelay() {
+    _mapInitializationTimer = Timer(Duration(milliseconds: 500), () {
+      setState(() {
+        _isMapReady = true;
+      });
+      
+      // If we have current position, center map on it
+      if (_currentPosition != null) {
+        _centerOnCurrentLocation();
+      }
+      
+      // Load grid if passed from grid management
+      if (widget.initialGridCells != null && widget.initialGridCells!.isNotEmpty) {
+        setState(() {
+          _gridCells = widget.initialGridCells!;
+          _showGrid = true;
+        });
+        
+        // If no current position, center on grid
+        if (_currentPosition == null && widget.gridCenter != null) {
+          _mapController.move(widget.gridCenter!, 16.0);
+        }
+      }
+    });
+  }
+
   @override
   void dispose() {
     _positionSubscription?.cancel();
@@ -137,29 +171,7 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     super.dispose();
   }
 
-  // FIX: New method to handle proper map initialization
-  void _initializeMapWithDelay() {
-    // Small delay to ensure map widget is fully rendered
-    _mapInitializationTimer = Timer(Duration(milliseconds: 500), () {
-      setState(() {
-        _isMapReady = true;
-      });
-      
-      // Load grid if passed from grid management
-      if (widget.initialGridCells != null && widget.initialGridCells!.isNotEmpty) {
-        setState(() {
-          _gridCells = widget.initialGridCells!;
-          _showGrid = true;
-        });
-        
-        // Navigate to grid center with proper timing
-        _navigateToGridCenterWithRetry();
-        
-        // Set flag to update target cell after navigation
-        _needsTargetCellUpdate = true;
-      }
-    });
-  }
+
 
   @override
   void didChangeDependencies() {
@@ -488,6 +500,67 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     });
   }
 
+
+
+
+// ======================Record magnetic reading======================
+
+void _recordMagneticReading() {
+  if (_currentPosition == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('No GPS location available'),
+        backgroundColor: Colors.red,
+      ),
+    );
+    return;
+  }
+
+  // Create reading with proper GPS data
+  final reading = MagneticReading(
+    projectId: widget.project?.id ?? 1,
+    latitude: _currentPosition!.latitude,
+    longitude: _currentPosition!.longitude,
+    altitude: _currentPosition!.altitude, // FIX: Use actual altitude from GPS
+    magneticX: _magneticX,
+    magneticY: _magneticY,
+    magneticZ: _magneticZ,
+    totalField: _totalField,
+    timestamp: DateTime.now(),
+    accuracy: _currentPosition!.accuracy, // FIX: Use actual GPS accuracy
+    heading: _heading, // FIX: Use actual compass heading
+    notes: 'Auto collection',
+  );
+
+  // Save to database if not in web mode
+  if (!_isWebMode && widget.project != null) {
+    DatabaseService.instance.insertMagneticReading(reading);
+  }
+
+  // Add to local list
+  _savedReadings.add(reading);
+  _collectedPoints.add(LatLng(reading.latitude, reading.longitude));
+  
+  setState(() {
+    _pointCount = _savedReadings.length;
+  });
+
+  _updateCoverageStats();
+
+  // Show confirmation
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Data collected! GPS Accuracy: ${_currentPosition!.accuracy.toStringAsFixed(1)}m, Altitude: ${_currentPosition!.altitude.toStringAsFixed(1)}m'),
+      backgroundColor: Colors.green,
+      duration: Duration(seconds: 2),
+    ),
+  );
+
+  // Auto-navigate to next target if enabled
+  if (_autoNavigate && _gridCells.isNotEmpty) {
+    _findNextTargetCell();
+  }
+}
   // ==================== GRID MANAGEMENT ====================
 
   void _updateCurrentCell() {
@@ -599,20 +672,20 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
       _collectedPoints.add(collectPoint);
     });
     
-    // Create magnetic reading
+    // Create magnetic reading with PROPER GPS data
     MagneticReading reading = MagneticReading(
       projectId: widget.project?.id ?? 1,
       latitude: collectPoint.latitude,
       longitude: collectPoint.longitude,
-      altitude: _currentPosition?.altitude ?? 0.0,
+      altitude: _currentPosition!.altitude, // FIX: Use actual GPS altitude
       magneticX: _magneticX,
       magneticY: _magneticY,
       magneticZ: _magneticZ,
       totalField: _totalField,
       timestamp: DateTime.now(),
-      accuracy: _gpsAccuracy,
-      heading: _heading,
-      notes: null,
+      accuracy: _currentPosition!.accuracy, // FIX: Use actual GPS accuracy
+      heading: _heading, // FIX: Use actual compass heading
+      notes: 'Manual collection',
     );
     
     // Save to database if not web mode
@@ -633,11 +706,11 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
       }
     }
     
-    // Show feedback
+    // Show feedback with GPS info
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Data point collected (${_totalField.toStringAsFixed(1)}nT)'),
-        duration: Duration(seconds: 1),
+        content: Text('Data collected! Field: ${_totalField.toStringAsFixed(1)}nT | GPS: ±${_currentPosition!.accuracy.toStringAsFixed(1)}m | Alt: ${_currentPosition!.altitude.toStringAsFixed(1)}m'),
+        duration: Duration(seconds: 2),
         backgroundColor: Colors.green,
       ),
     );
@@ -719,6 +792,39 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     );
   }
 
+
+  //==========Floating action button actions=================
+
+  Widget _buildFloatingActionButtons() {
+  return Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      // Manual Recording Button
+      FloatingActionButton(
+        heroTag: "manual_record",
+        onPressed: _recordMagneticReading,
+        backgroundColor: Colors.green,
+        child: Icon(Icons.add_location, color: Colors.white),
+        tooltip: 'Record Point',
+      ),
+      
+      SizedBox(height: 12),
+      
+      // Auto Recording Toggle Button
+      FloatingActionButton(
+        heroTag: "auto_record", 
+        onPressed: _toggleAutomaticCollection,
+        backgroundColor: _isCollecting ? Colors.red : Colors.blue,
+        child: Icon(
+          _isCollecting ? Icons.stop : Icons.play_arrow, 
+          color: Colors.white
+        ),
+        tooltip: _isCollecting ? 'Stop Auto Recording' : 'Start Auto Recording',
+      ),
+    ],
+  );
+}
+
   // ==================== ORIGINAL UI COMPONENTS ====================
 
   @override
@@ -763,161 +869,158 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
         ],
       ),
       bottomNavigationBar: _buildBottomStatsBar(),
+      floatingActionButton: _buildFloatingActionButtons(),
     );
   }
 
-  Widget _buildMapView() {
-    return Stack(
-      children: [
-        FlutterMap(
-          mapController: _mapController,
-          options: MapOptions(
-            // FIX: Intelligent initial center based on available data
-            initialCenter: _getInitialMapCenter(),
-            initialZoom: 16.0,
-            maxZoom: 20.0,
-            minZoom: 8.0,
-            onTap: _onMapTap,
-            // FIX: Add map event handling
-            onMapReady: () {
-              print('Map is ready');
-              if (!_isMapReady) {
-                setState(() {
-                  _isMapReady = true;
-                });
-                // Trigger grid navigation after map is ready
-                if (widget.gridCenter != null && _gridCells.isNotEmpty) {
-                  _navigateToGridCenterWithRetry();
+Widget _buildMapView() {
+  return Stack(
+    children: [
+      FlutterMap(
+        mapController: _mapController,
+        options: MapOptions(
+          initialCenter: _currentPosition != null
+              ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+              : widget.gridCenter ?? LatLng(51.5074, -0.1278),
+          initialZoom: _currentPosition != null ? 18.0 : 16.0,
+          onTap: _onMapTap,
+          onMapReady: () {
+            setState(() => _isMapReady = true);
+            if (_currentPosition != null) {
+              Future.delayed(Duration(milliseconds: 100), () {
+                if (mounted) {
+                  _centerOnCurrentLocation();
                 }
-              }
-            },
-          ),
-          children: [
-            // Base Map Layer
-            _buildBaseMapLayer(),
-            
-            // FIX: Grid Cells Layer with improved rendering
-            if (_showGrid && _gridCells.isNotEmpty && _isMapReady)
-              PolygonLayer(
-                polygons: _gridCells.map((cell) {
-                  Color cellColor = _getCellColor(cell.status);
-                  return Polygon(
-                    points: cell.bounds,
-                    color: cellColor.withOpacity(0.3),
-                    borderColor: cellColor,
-                    borderStrokeWidth: 2.0,
-                  );
-                }).toList(),
-              ),
-            
-            // Target Cell Highlight
-            if (_nextTargetCell != null && _isMapReady)
-              PolygonLayer(
-                polygons: [
-                  Polygon(
-                    points: _nextTargetCell!.bounds,
-                    color: Colors.yellow.withOpacity(0.5),
-                    borderColor: Colors.yellow,
-                    borderStrokeWidth: 3.0,
-                  ),
-                ],
-              ),
-            
-            // Collected Points
-            if (_collectedPoints.isNotEmpty)
-              CircleLayer(
-                circles: _collectedPoints.map((point) => CircleMarker(
-                  point: point,
-                  radius: 4,
-                  color: Colors.blue,
-                  borderColor: Colors.white,
-                  borderStrokeWidth: 1,
-                )).toList(),
-              ),
-            
-            // Saved Readings Points  
-            if (_savedReadings.isNotEmpty)
-              CircleLayer(
-                circles: _savedReadings.map((reading) => CircleMarker(
-                  point: LatLng(reading.latitude, reading.longitude),
-                  radius: 3,
-                  color: Colors.green,
-                  borderColor: Colors.white,
-                  borderStrokeWidth: 1,
-                )).toList(),
-              ),
-            
-            // Team Members
-            if (_showTeamMembers && _teamMembers.isNotEmpty)
-              CircleLayer(
-                circles: _teamMembers
-                    .where((member) => member.currentPosition != null)
-                    .map((member) => CircleMarker(
-                      point: member.currentPosition!,
-                      radius: 6,
-                      color: member.isOnline ? Colors.green : Colors.grey,
-                      borderColor: Colors.white,
-                      borderStrokeWidth: 2,
-                    )).toList(),
-              ),
-            
-            // FIX: Current Position with enhanced visibility
-            if (_currentPosition != null)
-              CircleLayer(
-                circles: [
-                  // Outer ring for better visibility
-                  CircleMarker(
-                    point: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-                    radius: 12,
-                    color: Colors.blue.withOpacity(0.2),
-                    borderColor: Colors.blue,
-                    borderStrokeWidth: 2,
-                  ),
-                  // Inner dot
-                  CircleMarker(
-                    point: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+              });
+            }
+          },
+        ),
+        children: [
+          // Base Map Layer
+          _buildBaseMapLayer(),
+          
+          // FIX: Grid Cells Layer with improved rendering
+          if (_showGrid && _gridCells.isNotEmpty && _isMapReady)
+            PolygonLayer(
+              polygons: _gridCells.map((cell) {
+                Color cellColor = _getCellColor(cell.status);
+                return Polygon(
+                  points: cell.bounds,
+                  color: cellColor.withOpacity(0.3),
+                  borderColor: cellColor,
+                  borderStrokeWidth: 2.0,
+                );
+              }).toList(),
+            ),
+          
+          // Target Cell Highlight
+          if (_nextTargetCell != null && _isMapReady)
+            PolygonLayer(
+              polygons: [
+                Polygon(
+                  points: _nextTargetCell!.bounds,
+                  color: Colors.yellow.withOpacity(0.5),
+                  borderColor: Colors.yellow,
+                  borderStrokeWidth: 3.0,
+                ),
+              ],
+            ),
+          
+          // Collected Points
+          if (_collectedPoints.isNotEmpty)
+            CircleLayer(
+              circles: _collectedPoints.map((point) => CircleMarker(
+                point: point,
+                radius: 4,
+                color: Colors.blue,
+                borderColor: Colors.white,
+                borderStrokeWidth: 1,
+              )).toList(),
+            ),
+          
+          // Saved Readings Points  
+          if (_savedReadings.isNotEmpty)
+            CircleLayer(
+              circles: _savedReadings.map((reading) => CircleMarker(
+                point: LatLng(reading.latitude, reading.longitude),
+                radius: 3,
+                color: Colors.green,
+                borderColor: Colors.white,
+                borderStrokeWidth: 1,
+              )).toList(),
+            ),
+          
+          // Team Members
+          if (_showTeamMembers && _teamMembers.isNotEmpty)
+            CircleLayer(
+              circles: _teamMembers
+                  .where((member) => member.currentPosition != null)
+                  .map((member) => CircleMarker(
+                    point: member.currentPosition!,
                     radius: 6,
-                    color: Colors.blue,
+                    color: member.isOnline ? Colors.green : Colors.grey,
                     borderColor: Colors.white,
                     borderStrokeWidth: 2,
+                  )).toList(),
+            ),
+          
+          // FIX: Current Position with enhanced visibility
+          if (_currentPosition != null)
+            MarkerLayer(
+              markers: [
+                Marker(
+                  point: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+                  width: 40,
+                  height: 40,
+                  child: Transform.rotate(
+                    angle: (_heading ?? 0) * math.pi / 180,
+                    child: Container(
+                      child: CustomPaint(
+                        painter: NavigationArrowPainter(
+                          heading: _heading ?? 0,
+                          isCalibrated: _isGpsCalibrated,
+                        ),
+                      ),
+                    ),
                   ),
-                ],
-              ),
-          ],
-        ),
-        
-        // FIX: Add debug info overlay (only in debug mode)
-        if (kDebugMode)
-          Positioned(
-            top: 16,
-            right: 16,
-            child: Container(
-              padding: EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.7),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text('DEBUG', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10)),
-                  Text('Map Ready: $_isMapReady', style: TextStyle(color: Colors.white, fontSize: 9)),
-                  Text('Grid Cells: ${_gridCells.length}', style: TextStyle(color: Colors.white, fontSize: 9)),
-                  if (widget.gridCenter != null)
-                    Text('Grid Center: ${widget.gridCenter!.latitude.toStringAsFixed(4)}, ${widget.gridCenter!.longitude.toStringAsFixed(4)}', 
-                         style: TextStyle(color: Colors.white, fontSize: 9)),
-                  if (_currentPosition != null)
-                    Text('Current Pos: ${_currentPosition!.latitude.toStringAsFixed(4)}, ${_currentPosition!.longitude.toStringAsFixed(4)}', 
-                         style: TextStyle(color: Colors.white, fontSize: 9)),
-                  Text('Show Grid: $_showGrid', style: TextStyle(color: Colors.white, fontSize: 9)),
-                ],
-              ),
+                ),
+              ],
+            ),
+        ],
+      ),
+      
+      // FIX: Add debug info overlay (only in debug mode)
+      if (kDebugMode)
+        Positioned(
+          top: 16,
+          right: 16,
+          child: Container(
+            padding: EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.7),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('DEBUG', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10)),
+                Text('Map Ready: $_isMapReady', style: TextStyle(color: Colors.white, fontSize: 9)),
+                Text('Grid Cells: ${_gridCells.length}', style: TextStyle(color: Colors.white, fontSize: 9)),
+                if (widget.gridCenter != null)
+                  Text('Grid Center: ${widget.gridCenter!.latitude.toStringAsFixed(4)}, ${widget.gridCenter!.longitude.toStringAsFixed(4)}', 
+                       style: TextStyle(color: Colors.white, fontSize: 9)),
+                if (_currentPosition != null)
+                  Text('Current Pos: ${_currentPosition!.latitude.toStringAsFixed(4)}, ${_currentPosition!.longitude.toStringAsFixed(4)}', 
+                       style: TextStyle(color: Colors.white, fontSize: 9)),
+                Text('Show Grid: $_showGrid', style: TextStyle(color: Colors.white, fontSize: 9)),
+              ],
             ),
           ),
-      ],
-    );
-  }
+        ),
+    ],
+  );
+}
 
   Widget _buildBaseMapLayer() {
     switch (_currentBaseLayer) {
@@ -1153,14 +1256,14 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
       projectId: widget.project?.id ?? 1,
       latitude: point.latitude,
       longitude: point.longitude,
-      altitude: 0.0,
+      altitude: _currentPosition?.altitude ?? 0.0, // Use current GPS altitude if available
       magneticX: _magneticX,
       magneticY: _magneticY,
       magneticZ: _magneticZ,
       totalField: _totalField,
       timestamp: DateTime.now(),
-      accuracy: 0.0,
-      heading: _heading,
+      accuracy: _currentPosition?.accuracy ?? 0.0, // Use current GPS accuracy
+      heading: _heading, // Current compass heading
       notes: 'Manual tap collection',
     );
     
@@ -1173,13 +1276,64 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Data point collected at tapped location'),
+        content: Text('Data point collected at tapped location - GPS accuracy: ${_currentPosition?.accuracy?.toStringAsFixed(1) ?? "N/A"}m'),
         duration: Duration(seconds: 1),
         backgroundColor: Colors.blue,
       ),
     );
   }
 
+
+
+ // ==================== Automatic Data collection ====================
+
+
+
+
+
+
+  void _toggleAutomaticCollection() {
+    setState(() {
+      _isCollecting = !_isCollecting;
+    });
+
+    if (_isCollecting) {
+      _startAutomaticCollection();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Automatic data collection started'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } else {
+      _stopAutomaticCollection();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Automatic data collection stopped'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+  }
+
+  void _startAutomaticCollection() {
+    _automaticCollectionTimer = Timer.periodic(_magneticPullRate, (timer) {
+      if (!_isCollecting || !mounted) {
+        timer.cancel();
+        return;
+      }
+      _recordMagneticReading(); // Use the new method
+    });
+  }
+
+  void _stopAutomaticCollection() {
+    _automaticCollectionTimer?.cancel();
+    _automaticCollectionTimer = null;
+  }
+
+
+
+//===================== MAP INTERACTIONS ====================
   void _centerOnCurrentLocation() {
     if (_currentPosition != null && _isMapReady) {
       try {
@@ -1208,41 +1362,44 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
 
   // ==================== EXPORT FUNCTIONALITY ====================
 
-  void _exportSurveyData() {
-    if (widget.project == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No project data to export')),
-      );
-      return;
-    }
-
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('Export Survey Data'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Choose export format:'),
-              SizedBox(height: 16),
-              _buildExportFormatButton(ExportFormat.csv, Icons.table_chart, Colors.green),
-              SizedBox(height: 8),
-              _buildExportFormatButton(ExportFormat.geojson, Icons.map, Colors.blue),
-              SizedBox(height: 8),
-              _buildExportFormatButton(ExportFormat.kml, Icons.public, Colors.orange),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('Cancel'),
-            ),
+void _exportSurveyData() {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Row(
+        children: [
+          Icon(Icons.download, color: Colors.blue),
+          SizedBox(width: 8),
+          Text('Export Survey Data'),
+        ],
+      ),
+      content: Container(
+        width: double.maxFinite,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Choose export format for your survey data:'),
+            SizedBox(height: 16),
+            ...ExportFormat.values.map((format) => Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: Icon(_getFormatIcon(format), color: _getFormatColor(format)),
+                title: Text(_getFormatName(format)),
+                onTap: () => _performExport(format),
+              ),
+            )).toList(),
           ],
-        );
-      },
-    );
-  }
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text('Cancel'),
+        ),
+      ],
+    ),
+  );
+}
 
   Widget _buildExportFormatButton(ExportFormat format, IconData icon, Color color) {
     return Container(
@@ -1278,34 +1435,76 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     }
   }
 
-  void _performExport(ExportFormat format) async {
-    try {
-      String exportData = await ExportService.instance.exportProject(
-        project: widget.project!,
-        readings: _savedReadings,
-        gridCells: _gridCells,
-        fieldNotes: [], // Add field notes if you have them
-        format: format,
-      );
+Future<void> _performExport(ExportFormat format) async {
+  final navigator = Navigator.of(context);
+  final scaffoldMessenger = ScaffoldMessenger.of(context);
+  
+  navigator.pop();
+  
+  try {
+    // Show loading
+    scaffoldMessenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            CircularProgressIndicator(strokeWidth: 2),
+            SizedBox(width: 16),
+            Text('Exporting ${_savedReadings.length} data points...'),
+          ],
+        ),
+        duration: Duration(seconds: 3),
+      ),
+    );
 
-      // In a real app, you would save to file system
-      // For now, just show success message
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Export completed: ${_savedReadings.length} readings, ${_gridCells.length} grid cells'),
-          backgroundColor: Colors.green,
+    // Create project for export
+    final project = widget.project ?? SurveyProject(
+      id: DateTime.now().millisecondsSinceEpoch,
+      name: 'Survey Export',
+      description: 'Exported survey data',
+      createdAt: DateTime.now(),
+    );
+
+    // Export data
+    String exportData = await ExportService.instance.exportProject(
+      project: project,
+      readings: _savedReadings,
+      gridCells: _gridCells,
+      fieldNotes: [],
+      format: format,
+    );
+
+    // Generate filename
+    String extension = _getFileExtension(format);
+    String filename = '${project.name}_${DateTime.now().millisecondsSinceEpoch}.$extension';
+    
+    // Save and share
+    await ExportService.instance.saveAndShare(
+      data: exportData,
+      filename: filename,
+      mimeType: _getMimeType(format),
+    );
+
+    scaffoldMessenger.hideCurrentSnackBar();
+    scaffoldMessenger.showSnackBar(
+      SnackBar(
+        content: Text('${_savedReadings.length} data points exported successfully!'),
+        backgroundColor: Colors.green,
+        action: SnackBarAction(
+          label: 'Share Again',
+          onPressed: () => _performExport(format),
         ),
-      );
-      
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Export failed: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
+      ),
+    );
+  } catch (e) {
+    scaffoldMessenger.hideCurrentSnackBar();
+    scaffoldMessenger.showSnackBar(
+      SnackBar(
+        content: Text('Export failed: $e'),
+        backgroundColor: Colors.red,
+      ),
+    );
   }
+}
 
   // ==================== SETTINGS AND DIALOGS ====================
 
@@ -1461,6 +1660,58 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
       },
     );
   }
+
+
+  // Helper methods - add these at the end of the class
+String _getFileExtension(ExportFormat format) {
+  switch (format) {
+    case ExportFormat.csv: return 'csv';
+    case ExportFormat.geojson: return 'geojson';
+    case ExportFormat.kml: return 'kml';
+    case ExportFormat.sqlite: return 'db';
+    case ExportFormat.shapefile: return 'shp';
+  }
+}
+
+String _getMimeType(ExportFormat format) {
+  switch (format) {
+    case ExportFormat.csv: return 'text/csv';
+    case ExportFormat.geojson: return 'application/geo+json';
+    case ExportFormat.kml: return 'application/vnd.google-earth.kml+xml';
+    case ExportFormat.sqlite: return 'application/x-sqlite3';
+    case ExportFormat.shapefile: return 'application/x-shapefile';
+  }
+}
+
+String _getFormatName(ExportFormat format) {
+  switch (format) {
+    case ExportFormat.csv: return 'CSV Spreadsheet';
+    case ExportFormat.geojson: return 'GeoJSON';
+    case ExportFormat.kml: return 'Google Earth KML';
+    case ExportFormat.sqlite: return 'SQLite Database';
+    case ExportFormat.shapefile: return 'Shapefile';
+  }
+}
+
+IconData _getFormatIcon(ExportFormat format) {
+  switch (format) {
+    case ExportFormat.csv: return Icons.table_chart;
+    case ExportFormat.geojson: return Icons.map;
+    case ExportFormat.kml: return Icons.public;
+    case ExportFormat.sqlite: return Icons.storage;
+    case ExportFormat.shapefile: return Icons.layers;
+  }
+}
+
+Color _getFormatColor(ExportFormat format) {
+  switch (format) {
+    case ExportFormat.csv: return Colors.green;
+    case ExportFormat.geojson: return Colors.blue;
+    case ExportFormat.kml: return Colors.orange;
+    case ExportFormat.sqlite: return Colors.purple;
+    case ExportFormat.shapefile: return Colors.teal;
+  }
+}
 }
 
 // ==================== CUSTOM PAINTERS ====================
@@ -1514,5 +1765,69 @@ class CompassPainter extends CustomPainter {
   @override
   bool shouldRepaint(CompassPainter oldDelegate) {
     return oldDelegate.heading != heading;
+  }
+}
+
+
+
+class NavigationArrowPainter extends CustomPainter {
+  final double heading;
+  final bool isCalibrated;
+
+  NavigationArrowPainter({
+    required this.heading, 
+    required this.isCalibrated
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 2 - 2;
+
+    // Outer circle (accuracy indicator)
+    final outerPaint = Paint()
+      ..color = isCalibrated ? Colors.green.withOpacity(0.3) : Colors.orange.withOpacity(0.3)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(center, radius, outerPaint);
+
+    // Border circle
+    final borderPaint = Paint()
+      ..color = isCalibrated ? Colors.green : Colors.orange
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    canvas.drawCircle(center, radius - 1, borderPaint);
+
+    // Inner circle (base)
+    final innerPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(center, radius - 4, innerPaint);
+
+    // Navigation arrow pointing up (rotation handled by Transform.rotate)
+    final arrowPaint = Paint()
+      ..color = isCalibrated ? Colors.green : Colors.orange
+      ..style = PaintingStyle.fill;
+
+    final path = Path();
+    path.moveTo(center.dx, center.dy - (radius - 8));
+    path.lineTo(center.dx - 6, center.dy - (radius - 16));
+    path.lineTo(center.dx - 3, center.dy - (radius - 16));
+    path.lineTo(center.dx - 3, center.dy + (radius - 16));
+    path.lineTo(center.dx + 3, center.dy + (radius - 16));
+    path.lineTo(center.dx + 3, center.dy - (radius - 16));
+    path.lineTo(center.dx + 6, center.dy - (radius - 16));
+    path.close();
+    canvas.drawPath(path, arrowPaint);
+
+    // Center dot
+    final centerDotPaint = Paint()
+      ..color = Colors.blue
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(center, 3, centerDotPaint);
+  }
+
+  @override
+  bool shouldRepaint(NavigationArrowPainter oldDelegate) {
+    return oldDelegate.heading != heading || oldDelegate.isCalibrated != isCalibrated;
   }
 }
