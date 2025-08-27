@@ -29,6 +29,7 @@ dependencies:
   flutter_map: ^8.2.1
   latlong2: ^0.9.0
   flutter_compass: ^0.8.1
+  #flutter_map_wms: ^1.0.0
   
   # Camera and Media
   image_picker: ^1.0.4

@@ -1073,55 +1073,63 @@ class _GridImportScreenState extends State<GridImportScreen> {
     return '~ ${(points * 0.05).toStringAsFixed(0)}KB';
   }
 
-  void _showHelpDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
+void _showHelpDialog() {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text('Survey Help'),
+      content: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.help, color: Colors.purple),
-            SizedBox(width: 8),
-            Text('Grid Management Help'),
+            // ADD THIS NEW SECTION AT THE TOP OR WHEREVER YOU PREFER:
+            Text('Map Orientation:', style: TextStyle(fontWeight: FontWeight.bold)),
+            SizedBox(height: 8),
+            Text('• Purple compass button: Enable/disable map rotation'),
+            Text('• When enabled, map rotates to match your movement direction'),
+            Text('• Helps with navigation - no need to turn your phone around'),
+            Text('• When disabled, map stays north-up (standard orientation)'),
+            SizedBox(height: 16),
+            
+            // YOUR EXISTING HELP CONTENT CONTINUES HERE...
+            Text('Getting Started:', style: TextStyle(fontWeight: FontWeight.bold)),
+            SizedBox(height: 8),
+            Text('1. Calibrate sensors using the calibrate button'),
+            Text('2. Wait for good GPS signal (green status)'),
+            Text('3. Use manual recording or start automatic mode'),
+            SizedBox(height: 16),
+            Text('Recording Data:', style: TextStyle(fontWeight: FontWeight.bold)),
+            SizedBox(height: 8),
+            Text('• Green FAB: Record single point'),
+            Text('• Blue FAB: Start/stop automatic recording'),
+            Text('• Purple FAB: Toggle compass display'),
+            SizedBox(height: 16),
+            Text('Map Controls:', style: TextStyle(fontWeight: FontWeight.bold)),
+            SizedBox(height: 8),
+            Text('• Pinch to zoom in/out'),
+            Text('• Drag to move map'),
+            Text('• Grid shows survey boundaries'),
+            Text('• Green dots show recorded points'),
+            SizedBox(height: 16),
+            Text('Team Mode:', style: TextStyle(fontWeight: FontWeight.bold)),
+            SizedBox(height: 8),
+            Text('• Enable in settings to collaborate'),
+            Text('• Share session code with team'),
+            Text('• See team members on map'),
+            // ... rest of your existing help content
           ],
         ),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Creation Methods:', style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 8),
-              Text('• Create with Map: Visual grid creation with location context'),
-              Text('• Import File: Load existing grid files (KML, GeoJSON, CSV, etc.)'),
-              Text('• Quick Create: Simple parameter-based grid generation'),
-              SizedBox(height: 16),
-              Text('Supported File Formats:', style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 8),
-              Text('• KML/KMZ: Google Earth files with survey boundaries'),
-              Text('• GeoJSON: Standard geospatial data format'),
-              Text('• CSV: Coordinate files with lat/lon columns'),
-              Text('• Custom: App-generated grids'),
-              SizedBox(height: 16),
-              Text('Best Practices:', style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 8),
-              Text('• Use "Create with Map" for precise positioning'),
-              Text('• Start with smaller grids for testing'),
-              Text('• Consider terrain and site accessibility'),
-              Text('• Ensure coordinates are in WGS84 format'),
-              Text('• Test grids before field deployment'),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Got It'),
-          ),
-        ],
       ),
-    );
-  }
-}
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text('Got It'),
+        ),
+      ],
+    ),
+  );
+}}
 
 // ==================== GRID FILE MODEL ====================
 

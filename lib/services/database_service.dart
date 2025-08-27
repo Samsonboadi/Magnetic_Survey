@@ -18,52 +18,78 @@ class DatabaseService {
     return _database!;
   }
 
-  Future<Database> _initDB(String filePath) async {
-    final dbPath = await getDatabasesPath();
-    final path = join(dbPath, filePath);
+Future<Database> _initDB(String filePath) async {
+  final dbPath = await getDatabasesPath();
+  final path = join(dbPath, filePath);
 
-    return await openDatabase(
-      path,
-      version: 2,
-      onCreate: _createDB,
-      onUpgrade: _upgradeDB,
-    );
-  }
+  return await openDatabase(
+    path,
+    version: 3, // UPDATED: Increment version to trigger migration
+    onCreate: _createDB,
+    onUpgrade: _upgradeDB,
+  );
+}
 
-  Future<void> _createDB(Database db, int version) async {
-    // Projects table
-    await db.execute('''
-      CREATE TABLE projects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        description TEXT,
-        createdAt TEXT NOT NULL,
-        gridSpacing REAL DEFAULT 10.0,
-        boundaryPoints TEXT
-      )
-    ''');
+
+Future<void> _createDB(Database db, int version) async {
+  // Projects table
+  await db.execute('''
+    CREATE TABLE projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT,
+      createdAt TEXT NOT NULL,
+      gridSpacing REAL DEFAULT 10.0,
+      boundaryPoints TEXT
+    )
+  ''');
 
     // Magnetic readings table
-    await db.execute('''
-      CREATE TABLE magnetic_readings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        latitude REAL NOT NULL,
-        longitude REAL NOT NULL,
-        altitude REAL NOT NULL,
-        magneticX REAL NOT NULL,
-        magneticY REAL NOT NULL,
-        magneticZ REAL NOT NULL,
-        totalField REAL NOT NULL,
-        timestamp TEXT NOT NULL,
-        notes TEXT,
-        projectId INTEGER NOT NULL,
-        FOREIGN KEY (projectId) REFERENCES projects (id) ON DELETE CASCADE
-      )
-    ''');
+  await db.execute('''
+    CREATE TABLE magnetic_readings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      latitude REAL NOT NULL,
+      longitude REAL NOT NULL,
+      altitude REAL NOT NULL,
+      magneticX REAL NOT NULL,
+      magneticY REAL NOT NULL,
+      magneticZ REAL NOT NULL,
+      totalField REAL NOT NULL,
+      timestamp TEXT NOT NULL,
+      notes TEXT,
+      projectId INTEGER NOT NULL,
+      accuracy REAL DEFAULT 5.0,
+      heading REAL,
+      FOREIGN KEY (projectId) REFERENCES projects (id) ON DELETE CASCADE
+    )
+  ''');
 
     // Field notes table
+  await db.execute('''
+    CREATE TABLE field_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      latitude REAL NOT NULL,
+      longitude REAL NOT NULL,
+      note TEXT NOT NULL,
+      imagePath TEXT,
+      audioPath TEXT,
+      timestamp TEXT NOT NULL,
+      projectId INTEGER NOT NULL,
+      FOREIGN KEY (projectId) REFERENCES projects (id) ON DELETE CASCADE
+    )
+  ''');
+
+    // Create indexes for better performance
+    await db.execute('CREATE INDEX idx_magnetic_project ON magnetic_readings(projectId)');
+    await db.execute('CREATE INDEX idx_magnetic_timestamp ON magnetic_readings(timestamp)');
+    await db.execute('CREATE INDEX idx_field_notes_project ON field_notes(projectId)');
+  }
+
+Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
+  if (oldVersion < 2) {
+    // Add field notes table if upgrading from version 1
     await db.execute('''
-      CREATE TABLE field_notes (
+      CREATE TABLE IF NOT EXISTS field_notes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         latitude REAL NOT NULL,
         longitude REAL NOT NULL,
@@ -75,32 +101,24 @@ class DatabaseService {
         FOREIGN KEY (projectId) REFERENCES projects (id) ON DELETE CASCADE
       )
     ''');
-
-    // Create indexes for better performance
-    await db.execute('CREATE INDEX idx_magnetic_project ON magnetic_readings(projectId)');
-    await db.execute('CREATE INDEX idx_magnetic_timestamp ON magnetic_readings(timestamp)');
-    await db.execute('CREATE INDEX idx_field_notes_project ON field_notes(projectId)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_field_notes_project ON field_notes(projectId)');
   }
-
-  Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
-    if (oldVersion < 2) {
-      // Add field notes table if upgrading from version 1
-      await db.execute('''
-        CREATE TABLE IF NOT EXISTS field_notes (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          latitude REAL NOT NULL,
-          longitude REAL NOT NULL,
-          note TEXT NOT NULL,
-          imagePath TEXT,
-          audioPath TEXT,
-          timestamp TEXT NOT NULL,
-          projectId INTEGER NOT NULL,
-          FOREIGN KEY (projectId) REFERENCES projects (id) ON DELETE CASCADE
-        )
-      ''');
-      await db.execute('CREATE INDEX IF NOT EXISTS idx_field_notes_project ON field_notes(projectId)');
+  
+  if (oldVersion < 3) {
+    // UPDATED: Add missing columns to existing magnetic_readings table
+    try {
+      await db.execute('ALTER TABLE magnetic_readings ADD COLUMN accuracy REAL DEFAULT 5.0');
+    } catch (e) {
+      print('Column accuracy might already exist: $e');
+    }
+    
+    try {
+      await db.execute('ALTER TABLE magnetic_readings ADD COLUMN heading REAL');
+    } catch (e) {
+      print('Column heading might already exist: $e');
     }
   }
+}
 
   // Project operations
   Future<int> insertProject(SurveyProject project) async {

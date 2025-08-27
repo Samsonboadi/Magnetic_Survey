@@ -56,11 +56,6 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
   double? _heading;
   final bool _isWebMode = kIsWeb;
 
-
-  bool _isMapOrientationEnabled = false;
-  double? _lastHeading;
-  Timer? _orientationUpdateTimer;
-
   // Survey data
   List<LatLng> _collectedPoints = [];
   List<GridCell> _gridCells = [];
@@ -175,114 +170,8 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     _positionSubscription?.cancel();
     _teamSubscription?.cancel();
     _teamService?.dispose();
-    _orientationUpdateTimer?.cancel();
     super.dispose();
   }
-
-
-
-
- // ==================Map Orientation====================
-
- void _toggleMapOrientation() {
-  setState(() {
-    _isMapOrientationEnabled = !_isMapOrientationEnabled;
-  });
-
-  if (_isMapOrientationEnabled) {
-    // Start orientation updates
-    _startMapOrientationUpdates();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Map orientation enabled - Map will rotate to your heading'),
-        backgroundColor: Colors.green,
-        duration: Duration(seconds: 2),
-      ),
-    );
-  } else {
-    // Stop orientation updates and reset to north
-    _stopMapOrientationUpdates();
-    _resetMapToNorth();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Map orientation disabled - Map reset to north'),
-        backgroundColor: Colors.orange,
-        duration: Duration(seconds: 2),
-      ),
-    );
-  }
-}
-
-void _startMapOrientationUpdates() {
-  _orientationUpdateTimer?.cancel();
-  _orientationUpdateTimer = Timer.periodic(Duration(milliseconds: 1000), (timer) {
-    if (_heading != null && _isMapOrientationEnabled && _isMapReady) {
-      // Only update if heading has changed significantly (more than 10 degrees)
-      // This prevents jittery rotation from small compass variations
-      if (_lastHeading == null || (_heading! - _lastHeading!).abs() > 10.0) {
-        _updateMapRotation(_heading!);
-        _lastHeading = _heading;
-      }
-    }
-  });
-}
-
-void _stopMapOrientationUpdates() {
-  _orientationUpdateTimer?.cancel();
-  _orientationUpdateTimer = null;
-  _lastHeading = null;
-}
-
-void _updateMapRotation(double heading) {
-  try {
-    // Convert heading to radians for the map rotation
-    // Negate the heading because flutter_map rotates clockwise (from north)
-    double rotationRadians = -heading * (math.pi / 180.0);
-    
-    // Get current camera position
-    final currentCamera = _mapController.camera;
-    
-    // Use moveAndRotate for smooth rotation transition
-    _mapController.moveAndRotate(
-      currentCamera.center, // Keep same center position
-      currentCamera.zoom,   // Keep same zoom level
-      rotationRadians,      // Apply new rotation
-    );
-    
-    if (kDebugMode) {
-      print('Map rotated to heading: ${heading.toStringAsFixed(1)}°');
-    }
-  } catch (e) {
-    print('Error updating map rotation: $e');
-    // Fallback: try simple rotation
-    try {
-      double rotationRadians = -heading * (math.pi / 180.0);
-      _mapController.rotate(rotationRadians);
-    } catch (fallbackError) {
-      print('Fallback rotation also failed: $fallbackError');
-    }
-  }
-}
-
-void _resetMapToNorth() {
-  try {
-    if (_isMapReady) {
-      final currentCamera = _mapController.camera;
-      _mapController.moveAndRotate(
-        currentCamera.center,
-        currentCamera.zoom,
-        0.0, // Reset rotation to 0 (north up)
-      );
-    }
-  } catch (e) {
-    print('Error resetting map to north: $e');
-  }
-}
-
-
-
-
-
 
   // ==================== INITIALIZATION METHODS ====================
 
@@ -501,180 +390,84 @@ void _resetMapToNorth() {
 
   // ==================== DATA COLLECTION ====================
 
-Future<void> _recordMagneticReading() async {
-  if (_currentPosition == null) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('GPS position not available. Please wait for location fix.'),
-        backgroundColor: Colors.orange,
-      ),
-    );
-    return;
-  }
-
-  if (!_isGpsCalibrated) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('GPS accuracy is poor. Consider waiting for better signal.'),
-        backgroundColor: Colors.orange,
-      ),
-    );
-  }
-
-  final reading = MagneticReading(
-    latitude: _currentPosition!.latitude,
-    longitude: _currentPosition!.longitude,
-    altitude: _currentPosition!.altitude ?? 0.0,
-    magneticX: _magneticX,
-    magneticY: _magneticY,
-    magneticZ: _magneticZ,
-    totalField: _totalField,
-    timestamp: DateTime.now(),
-    projectId: widget.project?.id ?? 1,
-    accuracy: _gpsAccuracy,
-    heading: _heading,
-  );
-
-  try {
-    if (!_isWebMode) {
-      await DatabaseService.instance.insertMagneticReading(reading);
-      _savedReadings.add(reading);
+  void _recordMagneticReading() async {
+    if (_currentPosition == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Waiting for GPS position...'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
     }
+
+    final collectPoint = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
     
     setState(() {
-      _collectedPoints.add(LatLng(_currentPosition!.latitude, _currentPosition!.longitude));
-      _pointCount = _savedReadings.length + _collectedPoints.length;
+      _collectedPoints.add(collectPoint);
+      _pointCount = _collectedPoints.length;
     });
 
-    // IMPROVED: Update grid cell status based on actual points inside cells
-    _updateGridCellStatus();
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Point recorded! Total: $_pointCount readings'),
-        backgroundColor: Colors.green,
-        duration: Duration(seconds: 2),
-      ),
+    final reading = MagneticReading(
+      id: null,
+      projectId: widget.project?.id ?? 1,
+      latitude: collectPoint.latitude,
+      longitude: collectPoint.longitude,
+      altitude: _currentPosition!.altitude,
+      magneticX: _magneticX,
+      magneticY: _magneticY,
+      magneticZ: _magneticZ,
+      totalField: _totalField,
+      timestamp: DateTime.now(),
+      accuracy: _currentPosition!.accuracy,
+      heading: _heading,
+      notes: 'Auto/Manual collection',
     );
-  } catch (e) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Error saving reading: $e'),
-        backgroundColor: Colors.red,
-      ),
-    );
+    
+    // Save to database if not web mode
+    if (!_isWebMode && widget.project != null) {
+      DatabaseService.instance.insertMagneticReading(reading);
+    }
+    
+    _savedReadings.add(reading);
+    _updateCoverageStats();
+    
+    // Update current cell status
+    if (_currentCell != null) {
+      _currentCell!.pointCount++;
+      if (_currentCell!.pointCount >= 5) {
+        _currentCell!.status = GridCellStatus.completed;
+        _currentCell!.completedTime = DateTime.now();
+        _findNextTargetCell();
+      }
+    }
+    
+    _showTemporaryDataBanner();
   }
-}
 
-
-void _updateGridCellStatus() {
-  if (_gridCells.isEmpty || _currentPosition == null) return;
-
-  LatLng currentLocation = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
-  
-  // Check each grid cell and count points actually inside it
-  for (int i = 0; i < _gridCells.length; i++) {
-    final cell = _gridCells[i];
-    
-    // Count ALL points (both collected and saved) that are inside this cell
-    int pointsInCell = 0;
-    
-    // Count collected points in this cell
-    for (var point in _collectedPoints) {
-      if (_isPointInCell(point, cell)) {
-        pointsInCell++;
-      }
-    }
-    
-    // Count saved readings in this cell
-    for (var reading in _savedReadings) {
-      LatLng readingPoint = LatLng(reading.latitude, reading.longitude);
-      if (_isPointInCell(readingPoint, cell)) {
-        pointsInCell++;
-      }
-    }
-    
-    // Update cell status based on actual points inside
-    GridCellStatus newStatus = cell.status;
-    
-    if (pointsInCell >= 2) { // REQUIREMENT: At least 2 points inside
-      newStatus = GridCellStatus.completed;
-      if (cell.status != GridCellStatus.completed) {
-        _gridCells[i].completedTime = DateTime.now();
-      }
-    } else if (pointsInCell >= 1) {
-      newStatus = GridCellStatus.inProgress;
-      if (cell.status == GridCellStatus.notStarted) {
-        _gridCells[i].startTime = DateTime.now();
-      }
-    }
-    
-    // Update the cell
+  void _toggleAutomaticCollection() {
     setState(() {
-      _gridCells[i].status = newStatus;
-      _gridCells[i].pointCount = pointsInCell;
+      _isCollecting = !_isCollecting;
     });
-  }
-  
-  // Update coverage stats
-  _updateCoverageStats();
-  
-  // Find next target cell
-  _findNextTargetCell();
-}
 
-// ==================== IMPROVED POINT-IN-POLYGON TEST ====================
-
-bool _isPointInCell(LatLng point, GridCell cell) {
-  if (cell.bounds.length < 3) return false;
-  
-  // Ray casting algorithm for point-in-polygon test
-  int intersections = 0;
-  
-  for (int i = 0; i < cell.bounds.length; i++) {
-    LatLng p1 = cell.bounds[i];
-    LatLng p2 = cell.bounds[(i + 1) % cell.bounds.length];
-    
-    if (((p1.latitude > point.latitude) != (p2.latitude > point.latitude)) &&
-        (point.longitude < (p2.longitude - p1.longitude) * 
-         (point.latitude - p1.latitude) / (p2.latitude - p1.latitude) + p1.longitude)) {
-      intersections++;
+    if (_isCollecting) {
+      _startAutomaticCollection();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Automatic data collection started'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } else {
+      _stopAutomaticCollection();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Automatic data collection stopped'),
+          backgroundColor: Colors.orange,
+        ),
+      );
     }
   }
-  
-  return intersections % 2 == 1;
-}
-void _toggleAutomaticCollection() {
-  setState(() {
-    _isCollecting = !_isCollecting;
-  });
-
-  if (_isCollecting) {
-    _automaticCollectionTimer = Timer.periodic(_magneticPullRate, (timer) {
-      if (mounted && _isCollecting) {
-        _recordMagneticReading();
-      } else {
-        timer.cancel();
-      }
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Automatic recording started - Each grid cell needs 2+ points'),
-        backgroundColor: Colors.blue,
-        duration: Duration(seconds: 3),
-      ),
-    );
-  } else {
-    _automaticCollectionTimer?.cancel();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Automatic recording stopped'),
-        backgroundColor: Colors.orange,
-      ),
-    );
-  }
-}
 
   void _startAutomaticCollection() {
     _automaticCollectionTimer = Timer.periodic(_magneticPullRate, (timer) {
@@ -1301,70 +1094,33 @@ void _toggleAutomaticCollection() {
     );
   }
 
-Widget _buildFloatingActionButtons() {
-  return Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      // MAP ORIENTATION BUTTON - NEW (add this as the first button)
-      FloatingActionButton.small(
-        heroTag: "map_orientation",
-        onPressed: _toggleMapOrientation,
-        backgroundColor: _isMapOrientationEnabled ? Colors.deepPurple : Colors.grey,
-        child: Icon(
-          _isMapOrientationEnabled ? Icons.explore : Icons.explore_outlined,
-          color: Colors.white,
-          size: 20,
+  Widget _buildFloatingActionButtons() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        FloatingActionButton(
+          heroTag: "manual_record",
+          onPressed: _recordMagneticReading,
+          backgroundColor: Colors.green,
+          child: Icon(Icons.add_location, color: Colors.white),
+          tooltip: 'Record Point',
         ),
-        tooltip: _isMapOrientationEnabled 
-            ? 'Disable Map Orientation' 
-            : 'Enable Map Orientation',
-      ),
-      
-      SizedBox(height: 12),
-      
-      // YOUR EXISTING BUTTONS (keep all your existing floating action buttons here)
-      // Manual Recording Button
-      FloatingActionButton(
-        heroTag: "manual_record",
-        onPressed: _recordMagneticReading,
-        backgroundColor: Colors.green,
-        child: Icon(Icons.add_location, color: Colors.white),
-        tooltip: 'Record Point',
-      ),
-      
-      SizedBox(height: 12),
-      
-      // Auto Recording Toggle Button
-      FloatingActionButton(
-        heroTag: "auto_record", 
-        onPressed: _toggleAutomaticCollection,
-        backgroundColor: _isCollecting ? Colors.red : Colors.blue,
-        child: Icon(
-          _isCollecting ? Icons.stop : Icons.play_arrow, 
-          color: Colors.white
+        
+        SizedBox(height: 12),
+        
+        FloatingActionButton(
+          heroTag: "auto_record", 
+          onPressed: _toggleAutomaticCollection,
+          backgroundColor: _isCollecting ? Colors.red : Colors.blue,
+          child: Icon(
+            _isCollecting ? Icons.stop : Icons.play_arrow, 
+            color: Colors.white
+          ),
+          tooltip: _isCollecting ? 'Stop Auto Recording' : 'Start Auto Recording',
         ),
-        tooltip: _isCollecting ? 'Stop Auto Recording' : 'Start Auto Recording',
-      ),
-      
-      SizedBox(height: 12),
-      
-      // Compass Toggle Button (keep your existing compass button)
-      FloatingActionButton.small(
-        heroTag: "compass_toggle",
-        onPressed: () => setState(() => _showCompass = !_showCompass),
-        backgroundColor: _showCompass ? Colors.purple : Colors.grey,
-        child: Icon(
-          _showCompass ? Icons.explore_off : Icons.compass_calibration, 
-          color: Colors.white,
-          size: 20,
-        ),
-        tooltip: _showCompass ? 'Hide Compass' : 'Show Compass',
-      ),
-      
-      // ADD ANY OTHER EXISTING BUTTONS YOU HAVE HERE...
-    ],
-  );
-}
+      ],
+    );
+  }
 
   PreferredSizeWidget _buildMinimalAppBar() {
     return AppBar(
@@ -1392,30 +1148,24 @@ Widget _buildFloatingActionButtons() {
 
   // ==================== HELPER METHODS ====================
 
-void _updateCoverageStats() {
-  if (_gridCells.isNotEmpty) {
-    _completedCells = _gridCells.where((cell) => cell.status == GridCellStatus.completed).length;
-    _coveragePercentage = (_completedCells / _gridCells.length) * 100.0;
-  } else {
-    _completedCells = 0;
-    _coveragePercentage = 0.0;
+  void _updateCoverageStats() {
+    if (_gridCells.isNotEmpty) {
+      _completedCells = _gridCells.where((cell) => cell.status == GridCellStatus.completed).length;
+      _coveragePercentage = (_completedCells / _gridCells.length) * 100;
+    } else {
+      _completedCells = 0;
+      _coveragePercentage = 0.0;
+    }
+    
+    Set<String> uniquePoints = {};
+    for (var point in _collectedPoints) {
+      uniquePoints.add('${point.latitude.toStringAsFixed(6)},${point.longitude.toStringAsFixed(6)}');
+    }
+    for (var reading in _savedReadings) {
+      uniquePoints.add('${reading.latitude.toStringAsFixed(6)},${reading.longitude.toStringAsFixed(6)}');
+    }
+    _pointCount = uniquePoints.length;
   }
-  
-  // Use Set to avoid double counting points
-  Set<String> uniquePoints = {};
-  
-  // Add collected points (current session)
-  for (var point in _collectedPoints) {
-    uniquePoints.add('${point.latitude.toStringAsFixed(6)},${point.longitude.toStringAsFixed(6)}');
-  }
-  
-  // Add saved readings (from database)
-  for (var reading in _savedReadings) {
-    uniquePoints.add('${reading.latitude.toStringAsFixed(6)},${reading.longitude.toStringAsFixed(6)}');
-  }
-  
-  _pointCount = uniquePoints.length;
-}
 
   Color _getCellColor(GridCellStatus status) {
     switch (status) {
@@ -1509,47 +1259,50 @@ void _updateCoverageStats() {
            position.longitude <= bounds.east;
   }
 
-void _findNextTargetCell() {
-  if (_gridCells.isEmpty) return;
+  void _findNextTargetCell() {
+    if (_gridCells.isEmpty) return;
 
-  GridCell? nextCell;
-  
-  // Priority 1: Find cells that need more points (have 1 point, need 2)
-  for (var cell in _gridCells) {
-    if (cell.status == GridCellStatus.inProgress && cell.pointCount < 2) {
-      nextCell = cell;
-      break;
-    }
-  }
-  
-  // Priority 2: Find completely unstarted cells
-  if (nextCell == null) {
+    GridCell? nextCell;
+    
     for (var cell in _gridCells) {
       if (cell.status == GridCellStatus.notStarted) {
         nextCell = cell;
         break;
       }
     }
+
+    if (nextCell == null) {
+      for (var cell in _gridCells) {
+        if (cell.status == GridCellStatus.inProgress) {
+          nextCell = cell;
+          break;
+        }
+      }
+    }
+
+    setState(() {
+      _nextTargetCell = nextCell;
+      _currentCell = nextCell;
+    });
   }
 
-  setState(() {
-    _nextTargetCell = nextCell;
-    _currentCell = nextCell;
-  });
-
-  print('Next target cell: ${nextCell?.id ?? "none"} (${nextCell?.pointCount ?? 0}/2 points)');
-}
-
-
-double _getDistanceToCell(LatLng userLocation, GridCell cell) {
-  // Calculate distance to center of cell
-  return Geolocator.distanceBetween(
-    userLocation.latitude, 
-    userLocation.longitude,
-    cell.centerLat, 
-    cell.centerLon
-  );
-}
+  bool _isPointInCell(LatLng point, GridCell cell) {
+    if (cell.bounds.length < 3) return false;
+    
+    int intersections = 0;
+    for (int i = 0; i < cell.bounds.length; i++) {
+      int j = (i + 1) % cell.bounds.length;
+      
+      if (((cell.bounds[i].latitude > point.latitude) != (cell.bounds[j].latitude > point.latitude)) &&
+          (point.longitude < (cell.bounds[j].longitude - cell.bounds[i].longitude) * 
+           (point.latitude - cell.bounds[i].latitude) / 
+           (cell.bounds[j].latitude - cell.bounds[i].latitude) + cell.bounds[i].longitude)) {
+        intersections++;
+      }
+    }
+    
+    return (intersections % 2) == 1;
+  }
 
   void _onMapTap(TapPosition tapPosition, LatLng point) {
     print('Map tapped at: ${point.latitude}, ${point.longitude}');

@@ -1,10 +1,12 @@
-// lib/main.dart (Updated with Grid Management)
+// lib/main.dart (Updated with Landing Screen + Grid Management)
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'screens/survey_screen.dart';
 import 'screens/project_manager_screen.dart';
-import 'screens/grid_import_screen.dart';  // Add this import
+import 'screens/grid_import_screen.dart';
+import 'screens/landing_screen.dart';
 import 'models/survey_project.dart';
 import 'services/database_service.dart';
 
@@ -52,11 +54,61 @@ class MagneticSurveyApp extends StatelessWidget {
           elevation: 4,
         ),
       ),
-      home: HomeScreen(),
+      home: AppWrapper(), // Changed from HomeScreen() to AppWrapper()
+      debugShowCheckedModeBanner: false,
     );
   }
 }
 
+// NEW: AppWrapper to handle Landing Screen
+class AppWrapper extends StatefulWidget {
+  @override
+  _AppWrapperState createState() => _AppWrapperState();
+}
+
+class _AppWrapperState extends State<AppWrapper> {
+  bool _showLanding = true;
+
+  @override
+  void initState() {
+    super.initState();
+    
+    // Set status bar style for landing screen
+    SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.light,
+      systemNavigationBarColor: Color(0xFF1E3C72),
+      systemNavigationBarIconBrightness: Brightness.light,
+    ));
+  }
+
+  void _continueToApp() {
+    setState(() {
+      _showLanding = false;
+    });
+    
+    // Reset status bar style for main app
+    SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.dark,
+      systemNavigationBarColor: Colors.white,
+      systemNavigationBarIconBrightness: Brightness.dark,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_showLanding) {
+      return LandingScreen(
+        onContinue: _continueToApp,
+      );
+    } else {
+      return HomeScreen(); // Your existing HomeScreen
+    }
+  }
+}
+
+// Your existing HomeScreen class (unchanged)
 class HomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -178,7 +230,7 @@ class HomeScreen extends StatelessWidget {
             
             SizedBox(height: 12),
             
-            // NEW: Grid Management Card
+            // Grid Management Card
             Card(
               elevation: 4,
               child: ListTile(
@@ -222,7 +274,7 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  // NEW: Grid import method
+  // Grid import method
   void _importGrid(BuildContext context) {
     if (kIsWeb) {
       // Enhanced web demo dialog with map creation option
@@ -408,7 +460,7 @@ class HomeScreen extends StatelessWidget {
             Text('• Real-time magnetic field measurement'),
             Text('• GPS coordinate tracking'),
             Text('• Team collaboration'),
-            Text('• Visual survey grid creation'),  // Updated
+            Text('• Visual survey grid creation'),
             Text('• Data export (CSV, GeoJSON, KML)'),
             Text('• Field notes with photos'),
             Text('• Compass and navigation'),
