@@ -319,7 +319,7 @@ class _LandingScreenState extends State<LandingScreen>
                                         SizedBox(height: 6),
                                         
                                         Text(
-                                          'Boadi Samson',
+                                          'Powered by Geominds',
                                           style: TextStyle(
                                             fontSize: 16,
                                             color: Colors.white,

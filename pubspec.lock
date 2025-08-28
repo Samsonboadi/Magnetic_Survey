@@ -34,7 +34,7 @@ packages:
     source: hosted
     version: "0.11.2"
   camera_android_camerax:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: camera_android_camerax
       sha256: "58b8fe843a3c83fd1273c00cb35f5a8ae507f6cc9b2029bcf7e2abba499e28d8"
@@ -609,7 +609,7 @@ packages:
     source: hosted
     version: "12.0.1"
   permission_handler_android:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: permission_handler_android
       sha256: "1e3bc410ca1bf84662104b100eb126e066cb55791b7451307f9708d4007350e6"
@@ -689,7 +689,7 @@ packages:
     source: hosted
     version: "6.1.2"
   sensors_plus_platform_interface:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: sensors_plus_platform_interface
       sha256: "58815d2f5e46c0c41c40fb39375d3f127306f7742efe3b891c0b1c87e2b5cd5d"
@@ -705,7 +705,7 @@ packages:
     source: hosted
     version: "11.1.0"
   share_plus_platform_interface:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: share_plus_platform_interface
       sha256: "88023e53a13429bd65d8e85e11a9b484f49d4c190abbd96c7932b74d6927cc9a"

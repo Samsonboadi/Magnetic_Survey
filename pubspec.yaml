@@ -16,36 +16,31 @@ dependencies:
   geolocator: ^14.0.2
   geolocator_android: ^5.0.2
   sensors_plus: ^6.1.2
-  sensors_plus_platform_interface: ^2.0.1
   permission_handler: ^12.0.1
-  permission_handler_android: ^13.0.1
   
   # Database
   sqflite: ^2.3.2
   path_provider: ^2.1.2
-  path: ^1.8.3
+  path: ^1.9.0
   
   # Maps and Navigation
   flutter_map: ^8.2.1
   latlong2: ^0.9.0
   flutter_compass: ^0.8.1
-  #flutter_map_wms: ^1.0.0
   
   # Camera and Media
-  image_picker: ^1.0.4
+  image_picker: ^1.1.2
   camera: ^0.11.2
-  camera_android_camerax: ^0.6.19+1
   
   # File handling and sharing
   file_picker: ^10.3.2
   share_plus: ^11.1.0
-  share_plus_platform_interface: ^6.1.0
   csv: ^6.0.0
   
   # UI and utilities
-  cupertino_icons: ^1.0.6
+  cupertino_icons: ^1.0.8
   vector_math: ^2.1.4
-  shared_preferences: 2.3.2
+  shared_preferences: ^2.3.2
 
 dev_dependencies:
   flutter_test:

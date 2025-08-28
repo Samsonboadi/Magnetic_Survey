@@ -1,6 +1,4 @@
-// Enhanced Production Survey Screen with Bug Fixes
-// File: lib/screens/survey_screen.dart
-
+// lib/screens/survey_screen.dart - FIXED VERSION
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 import 'package:geolocator/geolocator.dart';
@@ -26,7 +24,6 @@ import '../services/sensor_service.dart';
 import '../services/team_sync_service.dart';
 import '../services/export_service.dart';
 import '../widgets/team_panel.dart';
-//import '../widgets/emag2_layer.dart'; // Import the new EMAG2 layer
 
 enum MapBaseLayer {
   openStreetMap,
@@ -56,7 +53,7 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
   double? _heading;
   final bool _isWebMode = kIsWeb;
 
-
+  // Map orientation controls
   bool _isMapOrientationEnabled = false;
   double? _lastHeading;
   Timer? _orientationUpdateTimer;
@@ -99,17 +96,24 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
   bool _needsTargetCellUpdate = false;
   bool _isMapReady = false;
   bool _isTaskBarCollapsed = false;
-  bool _followLocation = true; // FIXED: Default to true
+  bool _followLocation = true;
   String _surveyMode = 'manual';
   MapBaseLayer _currentBaseLayer = MapBaseLayer.openStreetMap;
 
-  // Data collection state tracking
+  // Data collection state tracking - BANNER FIXES
   bool _showDataBanner = false;
   Timer? _bannerHideTimer;
 
-  // FIXED: Magnetic field color scale constants (microTesla range for smartphones)
-  static const double MIN_MAGNETIC_FIELD = 20.0;  // Changed from 53814.0
-  static const double MAX_MAGNETIC_FIELD = 70.0;  // Changed from 56767.0
+  // MAGNETOMETER CONTROL - NEW
+  bool _isMagnetometerActive = false;
+
+  // Grid boundary checking - NEW
+  bool _isOutsideGrid = false;
+  bool _wasCollectingBeforePause = false;
+
+  // FIXED: Platform-specific magnetic field ranges
+  static const double MIN_MAGNETIC_FIELD = 20.0;
+  static const double MAX_MAGNETIC_FIELD = 70.0;
 
   // Timers and controllers
   Duration _magneticPullRate = Duration(seconds: 1);
@@ -132,7 +136,6 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
   void initState() {
     super.initState();
     
-    // Initialize animation controller
     _taskBarAnimationController = AnimationController(
       duration: Duration(milliseconds: 300),
       vsync: this,
@@ -145,19 +148,20 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
       curve: Curves.easeInOut,
     ));
 
-    // Initialize grid if provided
-    if (widget.initialGridCells != null) {
+    // CRITICAL FIX: Properly initialize grid cells
+    if (widget.initialGridCells != null && widget.initialGridCells!.isNotEmpty) {
       setState(() {
-        _gridCells = widget.initialGridCells!;
+        _gridCells = List.from(widget.initialGridCells!); // Create a copy
+        _showGrid = true; // Ensure grid is shown
       });
+      print('Grid initialized with ${_gridCells.length} cells');
+      _findNextTargetCell(); // Find first target cell
     }
 
-    // Start core services
     _initializeLocation();
-    _startSensorListening();
+    _startCompassOnly();
     _loadPreviousSurveyData();
 
-    // Web simulation for testing
     if (_isWebMode) {
       _simulateDataForWeb();
     }
@@ -179,113 +183,6 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     super.dispose();
   }
 
-
-
-
- // ==================Map Orientation====================
-
- void _toggleMapOrientation() {
-  setState(() {
-    _isMapOrientationEnabled = !_isMapOrientationEnabled;
-  });
-
-  if (_isMapOrientationEnabled) {
-    // Start orientation updates
-    _startMapOrientationUpdates();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Map orientation enabled - Map will rotate to your heading'),
-        backgroundColor: Colors.green,
-        duration: Duration(seconds: 2),
-      ),
-    );
-  } else {
-    // Stop orientation updates and reset to north
-    _stopMapOrientationUpdates();
-    _resetMapToNorth();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Map orientation disabled - Map reset to north'),
-        backgroundColor: Colors.orange,
-        duration: Duration(seconds: 2),
-      ),
-    );
-  }
-}
-
-void _startMapOrientationUpdates() {
-  _orientationUpdateTimer?.cancel();
-  _orientationUpdateTimer = Timer.periodic(Duration(milliseconds: 1000), (timer) {
-    if (_heading != null && _isMapOrientationEnabled && _isMapReady) {
-      // Only update if heading has changed significantly (more than 10 degrees)
-      // This prevents jittery rotation from small compass variations
-      if (_lastHeading == null || (_heading! - _lastHeading!).abs() > 10.0) {
-        _updateMapRotation(_heading!);
-        _lastHeading = _heading;
-      }
-    }
-  });
-}
-
-void _stopMapOrientationUpdates() {
-  _orientationUpdateTimer?.cancel();
-  _orientationUpdateTimer = null;
-  _lastHeading = null;
-}
-
-void _updateMapRotation(double heading) {
-  try {
-    // Convert heading to radians for the map rotation
-    // Negate the heading because flutter_map rotates clockwise (from north)
-    double rotationRadians = -heading * (math.pi / 180.0);
-    
-    // Get current camera position
-    final currentCamera = _mapController.camera;
-    
-    // Use moveAndRotate for smooth rotation transition
-    _mapController.moveAndRotate(
-      currentCamera.center, // Keep same center position
-      currentCamera.zoom,   // Keep same zoom level
-      rotationRadians,      // Apply new rotation
-    );
-    
-    if (kDebugMode) {
-      print('Map rotated to heading: ${heading.toStringAsFixed(1)}°');
-    }
-  } catch (e) {
-    print('Error updating map rotation: $e');
-    // Fallback: try simple rotation
-    try {
-      double rotationRadians = -heading * (math.pi / 180.0);
-      _mapController.rotate(rotationRadians);
-    } catch (fallbackError) {
-      print('Fallback rotation also failed: $fallbackError');
-    }
-  }
-}
-
-void _resetMapToNorth() {
-  try {
-    if (_isMapReady) {
-      final currentCamera = _mapController.camera;
-      _mapController.moveAndRotate(
-        currentCamera.center,
-        currentCamera.zoom,
-        0.0, // Reset rotation to 0 (north up)
-      );
-    }
-  } catch (e) {
-    print('Error resetting map to north: $e');
-  }
-}
-
-
-
-
-
-
-  // ==================== INITIALIZATION METHODS ====================
-
   Future<void> _initializeLocation() async {
     try {
       LocationPermission permission = await Geolocator.checkPermission();
@@ -305,12 +202,8 @@ void _resetMapToNorth() {
             _gpsAccuracy = position.accuracy;
             _isGpsCalibrated = position.accuracy < 5.0;
           });
-          
-          // FIXED: Wait for map to be ready before centering
-          _waitForMapReadyThenCenter();
         }
         
-        // Set up position stream
         _positionSubscription = Geolocator.getPositionStream(
           locationSettings: LocationSettings(
             accuracy: LocationAccuracy.high,
@@ -326,67 +219,28 @@ void _resetMapToNorth() {
               }
             });
             
-            // FIXED: Only auto-follow if enabled AND map is ready
+            _checkGridBoundary();
+            
             if (_followLocation && _isMapReady) {
               try {
                 LatLng currentLocation = LatLng(position.latitude, position.longitude);
                 _mapController.move(currentLocation, _mapController.camera.zoom);
               } catch (e) {
-                print('Map controller not ready for auto-navigation: $e');
+                print('Map controller not ready: $e');
               }
-            }
-            
-            // Team position update
-            if (_isTeamMode && _teamService != null) {
-              _teamService!.updateMyPosition(
-                LatLng(position.latitude, position.longitude), 
-                _heading
-              );
             }
           }
         });
       }
     } catch (e) {
       print('Location error: $e');
-      setState(() {
-        _hasLocationError = true;
-      });
+      _hasLocationError = true;
     }
   }
 
-  // FIXED: Helper method to wait for map ready then center
-  void _waitForMapReadyThenCenter() {
-    Timer.periodic(Duration(milliseconds: 100), (timer) {
-      if (_isMapReady && _currentPosition != null) {
-        timer.cancel();
-        try {
-          LatLng currentLocation = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
-          _mapController.move(currentLocation, 16.0);
-          print('Initial location centered: $currentLocation');
-        } catch (e) {
-          print('Error centering on initial location: $e');
-        }
-      } else if (timer.tick > 50) { // 5 second timeout
-        timer.cancel();
-        print('Timeout waiting for map to be ready');
-      }
-    });
-  }
-
-  void _startSensorListening() {
-    _magnetometerSubscription = magnetometerEvents.listen((MagnetometerEvent event) {
-      if (mounted) {
-        setState(() {
-          _magneticX = event.x - _magneticCalibrationX;
-          _magneticY = event.y - _magneticCalibrationY;
-          _magneticZ = event.z - _magneticCalibrationZ;
-          _totalField = math.sqrt(_magneticX * _magneticX + _magneticY * _magneticY + _magneticZ * _magneticZ);
-        });
-      }
-    });
-
+  void _startCompassOnly() {
     _compassSubscription = FlutterCompass.events?.listen((CompassEvent event) {
-      if (mounted) {
+      if (mounted && event.heading != null) {
         setState(() {
           _heading = event.heading;
         });
@@ -396,285 +250,249 @@ void _resetMapToNorth() {
 
   void _simulateDataForWeb() {
     _webSimulationTimer = Timer.periodic(Duration(seconds: 1), (timer) {
-      if (!mounted || !_isCollecting) {
+      if (!mounted) {
         timer.cancel();
         return;
       }
       setState(() {
-        _magneticX = 25.0 + (math.Random().nextDouble() - 0.5) * 10;
-        _magneticY = 15.0 + (math.Random().nextDouble() - 0.5) * 10;
-        _magneticZ = 35.0 + (math.Random().nextDouble() - 0.5) * 10;
-        _totalField = math.sqrt(_magneticX * _magneticX + _magneticY * _magneticY + _magneticZ * _magneticZ);
+        if (_isMagnetometerActive) {
+          _magneticX = 25.0 + (math.Random().nextDouble() - 0.5) * 10;
+          _magneticY = 15.0 + (math.Random().nextDouble() - 0.5) * 10;
+          _magneticZ = 35.0 + (math.Random().nextDouble() - 0.5) * 10;
+          _totalField = SensorService.calculateTotalField(_magneticX, _magneticY, _magneticZ);
+        }
         _heading = (math.Random().nextDouble() * 360);
         _gpsAccuracy = 2.0 + math.Random().nextDouble() * 3;
       });
     });
   }
 
-  Future<void> _loadPreviousSurveyData() async {
-    if (_isWebMode || widget.project == null) return;
-    
-    try {
-      final readings = await DatabaseService.instance.getReadingsForProject(widget.project!.id!);
-      if (mounted) {
-        setState(() {
-          _savedReadings = readings;
-          _collectedPoints.addAll(readings.map((r) => LatLng(r.latitude, r.longitude)));
-          _pointCount = readings.length;
-        });
-        _updateCoverageStats();
-      }
-    } catch (e) {
-      print('Error loading previous survey data: $e');
-    }
-  }
+  // MAGNETOMETER CONTROL
+  void _toggleMagnetometer() {
+    setState(() {
+      _isMagnetometerActive = !_isMagnetometerActive;
+    });
 
-  // ==================== MAGNETIC FIELD COLOR MAPPING ====================
-  
-  Color getMagneticFieldColor(double totalField) {
-    // DEBUG: Print values to verify the fix works
-    if (kDebugMode) {
-      print('Total Field: $totalField μT, Range: $MIN_MAGNETIC_FIELD-$MAX_MAGNETIC_FIELD μT');
-    }
-    
-    // Normalize the value between 0 and 1
-    double normalized = (totalField - MIN_MAGNETIC_FIELD) / (MAX_MAGNETIC_FIELD - MIN_MAGNETIC_FIELD);
-    normalized = math.max(0.0, math.min(1.0, normalized)); // Clamp between 0 and 1
-    
-    // DEBUG: Print normalized value
-    if (kDebugMode) {
-      print('Normalized value: $normalized');
-    }
-    
-    // Create spectral color mapping (blue -> cyan -> green -> yellow -> red)
-    if (normalized < 0.25) {
-      double t = normalized / 0.25;
-      return Color.lerp(Colors.blue[900]!, Colors.cyan, t)!;
-    } else if (normalized < 0.5) {
-      double t = (normalized - 0.25) / 0.25;
-      return Color.lerp(Colors.cyan, Colors.green, t)!;
-    } else if (normalized < 0.75) {
-      double t = (normalized - 0.5) / 0.25;
-      return Color.lerp(Colors.green, Colors.yellow, t)!;
+    if (_isMagnetometerActive) {
+      _startMagnetometerOnly();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Magnetometer readings started'),
+          backgroundColor: Colors.purple,
+          duration: Duration(seconds: 2),
+        ),
+      );
     } else {
-      double t = (normalized - 0.75) / 0.25;
-      return Color.lerp(Colors.yellow, Colors.red[900]!, t)!;
+      _stopMagnetometerOnly();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Magnetometer readings stopped'),
+          backgroundColor: Colors.grey,
+          duration: Duration(seconds: 2),
+        ),
+      );
     }
   }
 
-  // ==================== MAP CONFIGURATION ====================
-
-  Widget _buildBaseMapLayer() {
-    switch (_currentBaseLayer) {
-      case MapBaseLayer.satellite:
-        return TileLayer(
-          urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-          userAgentPackageName: 'com.example.magnetic_survey_app',
-        );
-      case MapBaseLayer.emag2Magnetic:
-        // FIXED: Use simple OpenStreetMap base with EMAG2 overlay
-        return TileLayer(
-          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-          userAgentPackageName: 'com.example.magnetic_survey_app',
-        );
-      case MapBaseLayer.openStreetMap:
-      default:
-        return TileLayer(
-          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-          userAgentPackageName: 'com.example.magnetic_survey_app',
-        );
-    }
+  void _startMagnetometerOnly() {
+    _magnetometerSubscription?.cancel();
+    _magnetometerSubscription = magnetometerEvents.listen((MagnetometerEvent event) {
+      if (mounted && _isMagnetometerActive) {
+        setState(() {
+          _magneticX = event.x - _magneticCalibrationX;
+          _magneticY = event.y - _magneticCalibrationY;
+          _magneticZ = event.z - _magneticCalibrationZ;
+          _totalField = SensorService.calculateTotalField(_magneticX, _magneticY, _magneticZ);
+        });
+      }
+    });
   }
 
-  LatLng _getInitialMapCenter() {
-    if (_currentPosition != null && _currentPosition!.accuracy < 100) {
-      return LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
-    }
-    
-    if (widget.gridCenter != null) {
-      return widget.gridCenter!;
-    }
-    
-    // Fallback to equator
-    return LatLng(0.0, 0.0);
-  }
-
-  // ==================== DATA COLLECTION ====================
-
-Future<void> _recordMagneticReading() async {
-  if (_currentPosition == null) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('GPS position not available. Please wait for location fix.'),
-        backgroundColor: Colors.orange,
-      ),
-    );
-    return;
-  }
-
-  if (!_isGpsCalibrated) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('GPS accuracy is poor. Consider waiting for better signal.'),
-        backgroundColor: Colors.orange,
-      ),
-    );
-  }
-
-  final reading = MagneticReading(
-    latitude: _currentPosition!.latitude,
-    longitude: _currentPosition!.longitude,
-    altitude: _currentPosition!.altitude ?? 0.0,
-    magneticX: _magneticX,
-    magneticY: _magneticY,
-    magneticZ: _magneticZ,
-    totalField: _totalField,
-    timestamp: DateTime.now(),
-    projectId: widget.project?.id ?? 1,
-    accuracy: _gpsAccuracy,
-    heading: _heading,
-  );
-
-  try {
-    if (!_isWebMode) {
-      await DatabaseService.instance.insertMagneticReading(reading);
-      _savedReadings.add(reading);
-    }
+  void _stopMagnetometerOnly() {
+    _magnetometerSubscription?.cancel();
+    _magnetometerSubscription = null;
     
     setState(() {
-      _collectedPoints.add(LatLng(_currentPosition!.latitude, _currentPosition!.longitude));
-      _pointCount = _savedReadings.length + _collectedPoints.length;
+      _magneticX = 0.0;
+      _magneticY = 0.0;
+      _magneticZ = 0.0;
+      _totalField = 0.0;
     });
-
-    // IMPROVED: Update grid cell status based on actual points inside cells
-    _updateGridCellStatus();
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Point recorded! Total: $_pointCount readings'),
-        backgroundColor: Colors.green,
-        duration: Duration(seconds: 2),
-      ),
-    );
-  } catch (e) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Error saving reading: $e'),
-        backgroundColor: Colors.red,
-      ),
-    );
   }
-}
 
-
-void _updateGridCellStatus() {
-  if (_gridCells.isEmpty || _currentPosition == null) return;
-
-  LatLng currentLocation = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
-  
-  // Check each grid cell and count points actually inside it
-  for (int i = 0; i < _gridCells.length; i++) {
-    final cell = _gridCells[i];
+  // GRID BOUNDARY CHECKING
+  void _checkGridBoundary() {
+    if (_gridCells.isEmpty || _currentPosition == null) return;
     
-    // Count ALL points (both collected and saved) that are inside this cell
-    int pointsInCell = 0;
+    LatLng currentLocation = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
+    bool isInsideAnyCell = false;
     
-    // Count collected points in this cell
-    for (var point in _collectedPoints) {
-      if (_isPointInCell(point, cell)) {
-        pointsInCell++;
+    for (var cell in _gridCells) {
+      if (_isPointInCell(currentLocation, cell)) {
+        isInsideAnyCell = true;
+        if (_currentCell != cell) {
+          setState(() {
+            _currentCell = cell;
+            if (cell.status == GridCellStatus.notStarted) {
+              cell.status = GridCellStatus.inProgress;
+              cell.startTime = DateTime.now();
+            }
+          });
+        }
+        break;
       }
     }
     
-    // Count saved readings in this cell
-    for (var reading in _savedReadings) {
-      LatLng readingPoint = LatLng(reading.latitude, reading.longitude);
-      if (_isPointInCell(readingPoint, cell)) {
-        pointsInCell++;
+    if (_isOutsideGrid != !isInsideAnyCell) {
+      setState(() {
+        _isOutsideGrid = !isInsideAnyCell;
+      });
+      
+      if (_isOutsideGrid && _isCollecting) {
+        _wasCollectingBeforePause = true;
+        setState(() {
+          _isCollecting = false;
+          _showDataBanner = false;
+        });
+        _automaticCollectionTimer?.cancel();
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.warning, color: Colors.white),
+                SizedBox(width: 8),
+                Expanded(child: Text('Outside grid boundary - recording paused')),
+              ],
+            ),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 4),
+          ),
+        );
+      } else if (!_isOutsideGrid && _wasCollectingBeforePause && !_isCollecting) {
+        _wasCollectingBeforePause = false;
+        setState(() {
+          _isCollecting = true;
+        });
+        _startAutomaticCollection();
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 8),
+                Expanded(child: Text('Back in grid - recording resumed')),
+              ],
+            ),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
+  bool _isPointInCell(LatLng point, GridCell cell) {
+    if (cell.bounds.length < 3) return false;
+    
+    int intersections = 0;
+    for (int i = 0; i < cell.bounds.length; i++) {
+      int j = (i + 1) % cell.bounds.length;
+      
+      if (((cell.bounds[i].latitude > point.latitude) != (cell.bounds[j].latitude > point.latitude)) &&
+          (point.longitude < (cell.bounds[j].longitude - cell.bounds[i].longitude) * 
+           (point.latitude - cell.bounds[i].latitude) / 
+           (cell.bounds[j].latitude - cell.bounds[i].latitude) + cell.bounds[i].longitude)) {
+        intersections++;
       }
     }
     
-    // Update cell status based on actual points inside
-    GridCellStatus newStatus = cell.status;
-    
-    if (pointsInCell >= 2) { // REQUIREMENT: At least 2 points inside
-      newStatus = GridCellStatus.completed;
-      if (cell.status != GridCellStatus.completed) {
-        _gridCells[i].completedTime = DateTime.now();
-      }
-    } else if (pointsInCell >= 1) {
-      newStatus = GridCellStatus.inProgress;
-      if (cell.status == GridCellStatus.notStarted) {
-        _gridCells[i].startTime = DateTime.now();
-      }
+    return (intersections % 2) == 1;
+  }
+
+  // RECORDING METHODS
+  void _recordMagneticReading() {
+    if (_currentPosition == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No GPS location available'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
     }
+
+    final reading = MagneticReading(
+      projectId: widget.project?.id ?? 1,
+      latitude: _currentPosition!.latitude,
+      longitude: _currentPosition!.longitude,
+      altitude: _currentPosition!.altitude ?? 0.0,
+      magneticX: _magneticX,
+      magneticY: _magneticY,
+      magneticZ: _magneticZ,
+      totalField: _totalField,
+      timestamp: DateTime.now(),
+      accuracy: _currentPosition!.accuracy,
+      heading: _heading,
+      notes: _isCollecting ? 'Auto collection' : 'Manual collection',
+    );
+
+    if (!_isWebMode && widget.project != null) {
+      DatabaseService.instance.insertMagneticReading(reading);
+    }
+
+    _savedReadings.add(reading);
+    _collectedPoints.add(LatLng(reading.latitude, reading.longitude));
     
-    // Update the cell
     setState(() {
-      _gridCells[i].status = newStatus;
-      _gridCells[i].pointCount = pointsInCell;
+      _pointCount = _savedReadings.length;
     });
-  }
-  
-  // Update coverage stats
-  _updateCoverageStats();
-  
-  // Find next target cell
-  _findNextTargetCell();
-}
 
-// ==================== IMPROVED POINT-IN-POLYGON TEST ====================
-
-bool _isPointInCell(LatLng point, GridCell cell) {
-  if (cell.bounds.length < 3) return false;
-  
-  // Ray casting algorithm for point-in-polygon test
-  int intersections = 0;
-  
-  for (int i = 0; i < cell.bounds.length; i++) {
-    LatLng p1 = cell.bounds[i];
-    LatLng p2 = cell.bounds[(i + 1) % cell.bounds.length];
+    _updateCoverageStats();
     
-    if (((p1.latitude > point.latitude) != (p2.latitude > point.latitude)) &&
-        (point.longitude < (p2.longitude - p1.longitude) * 
-         (point.latitude - p1.latitude) / (p2.latitude - p1.latitude) + p1.longitude)) {
-      intersections++;
+    if (_isCollecting) {
+      _showTemporaryDataBanner();
     }
   }
-  
-  return intersections % 2 == 1;
-}
-void _toggleAutomaticCollection() {
-  setState(() {
-    _isCollecting = !_isCollecting;
-  });
 
-  if (_isCollecting) {
-    _automaticCollectionTimer = Timer.periodic(_magneticPullRate, (timer) {
-      if (mounted && _isCollecting) {
-        _recordMagneticReading();
-      } else {
-        timer.cancel();
+  // FIXED: Your complete method with banner fixes
+  void _toggleAutomaticCollection() {
+    setState(() {
+      _isCollecting = !_isCollecting;
+      // CRITICAL FIX: Clear banner immediately when stopping
+      if (!_isCollecting) {
+        _showDataBanner = false;
+        _bannerHideTimer?.cancel();
       }
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Automatic recording started - Each grid cell needs 2+ points'),
-        backgroundColor: Colors.blue,
-        duration: Duration(seconds: 3),
-      ),
-    );
-  } else {
-    _automaticCollectionTimer?.cancel();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Automatic recording stopped'),
-        backgroundColor: Colors.orange,
-      ),
-    );
+    if (_isCollecting) {
+      _automaticCollectionTimer = Timer.periodic(_magneticPullRate, (timer) {
+        if (mounted && _isCollecting) {
+          _recordMagneticReading();
+        } else {
+          timer.cancel();
+        }
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Automatic recording started - Each grid cell needs 2+ points'),
+          backgroundColor: Colors.blue,
+          duration: Duration(seconds: 3),
+        ),
+      );
+    } else {
+      _automaticCollectionTimer?.cancel();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Automatic recording stopped'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
   }
-}
 
   void _startAutomaticCollection() {
     _automaticCollectionTimer = Timer.periodic(_magneticPullRate, (timer) {
@@ -692,12 +510,14 @@ void _toggleAutomaticCollection() {
   }
 
   void _showTemporaryDataBanner() {
+    if (!_isCollecting) return;
+    
     setState(() {
       _showDataBanner = true;
     });
     
     _bannerHideTimer?.cancel();
-    _bannerHideTimer = Timer(Duration(seconds: 3), () {
+    _bannerHideTimer = Timer(Duration(seconds: 2), () {
       if (mounted) {
         setState(() {
           _showDataBanner = false;
@@ -705,896 +525,6 @@ void _toggleAutomaticCollection() {
       }
     });
   }
-
-  // ==================== UI COMPONENTS ====================
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: _buildMinimalAppBar(),
-      body: Stack(
-        children: [
-          _buildFullScreenMapView(),
-          
-          // Floating status widgets
-          Positioned(
-            top: 10,
-            left: 10,
-            child: _buildFloatingStatusWidgets(),
-          ),
-          
-          // FIXED: Location follow toggle button
-          Positioned(
-            top: 80,
-            right: 10,
-            child: _buildLocationFollowButton(),
-          ),
-          
-          // Magnetic scale legend
-          Positioned(
-            top: 10,
-            right: 10,
-            child: _buildMagneticScale(),
-          ),
-          
-          // Collapsible task bar
-          _buildCollapsibleTaskBar(),
-          
-          // Data collection banner
-          if (_showDataBanner)
-            Positioned(
-              top: 80,
-              left: 16,
-              right: 16,
-              child: _buildDataBanner(),
-            ),
-        ],
-      ),
-      floatingActionButton: _buildFloatingActionButtons(),
-      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-    );
-  }
-
-  Widget _buildFullScreenMapView() {
-    return FlutterMap(
-      mapController: _mapController,
-      options: MapOptions(
-        initialCenter: _getInitialMapCenter(),
-        initialZoom: _currentPosition != null ? 16.0 : 10.0,
-        minZoom: 3.0,
-        maxZoom: 22.0,
-        onMapReady: () {
-          print('Map is now ready');
-          setState(() => _isMapReady = true);
-          
-          // FIXED: Center on current location when map becomes ready
-          if (_currentPosition != null) {
-            LatLng currentLocation = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
-            _mapController.move(currentLocation, 16.0);
-            print('Map ready - centered on current location: $currentLocation');
-          }
-          
-          if (widget.gridCenter != null) {
-            _navigateToGridCenter();
-          }
-        },
-        onTap: _onMapTap,
-      ),
-      children: [
-        _buildBaseMapLayer(),
-        
-        // FIXED: EMAG2 Global Overlay (simple approach that works with Flutter Map 8.x)
-        if (_currentBaseLayer == MapBaseLayer.emag2Magnetic)
-          OverlayImageLayer(
-            overlayImages: [
-              OverlayImage(
-                bounds: LatLngBounds(
-                  LatLng(-90, -180), // Global coverage
-                  LatLng(90, 180),
-                ),
-                imageProvider: NetworkImage(
-                  'https://gis.ngdc.noaa.gov/arcgis/rest/services/EMAG2v3/ImageServer/exportImage'
-                  '?bbox=-180,-90,180,90'
-                  '&size=1024,512'
-                  '&format=png'
-                  '&f=image'
-                  '&transparent=true'
-                  '&interpolation=RSP_BilinearInterpolation',
-                ),
-                opacity: 0.6,
-              ),
-            ],
-          ),
-        
-        // Grid overlay
-        if (_showGrid && _gridCells.isNotEmpty)
-          PolygonLayer(
-            polygons: _gridCells.map((cell) => Polygon(
-              points: cell.bounds,
-              color: _getCellColor(cell.status).withOpacity(0.3),
-              borderStrokeWidth: 1.0,
-              borderColor: _getCellColor(cell.status),
-            )).toList(),
-          ),
-
-        // FIXED: Collected points with corrected magnetic field colors
-        MarkerLayer(
-          markers: _collectedPoints.asMap().entries.map((entry) {
-            int index = entry.key;
-            LatLng point = entry.value;
-            
-            double magneticValue = _totalField;
-            if (index < _savedReadings.length) {
-              magneticValue = _savedReadings[index].totalField;
-            }
-            
-            Color pointColor = getMagneticFieldColor(magneticValue);
-            
-            if (kDebugMode && index == _collectedPoints.length - 1) {
-              print('Point $index: $magneticValue μT -> Color: $pointColor');
-            }
-            
-            return Marker(
-              point: point,
-              child: Container(
-                width: 12,
-                height: 12,
-                decoration: BoxDecoration(
-                  color: pointColor,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 1),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black26,
-                      blurRadius: 2,
-                      offset: Offset(0, 1),
-                    ),
-                  ],
-                ),
-                child: Center(
-                  child: Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                ),
-              ),
-            );
-          }).toList(),
-        ),
-
-        // Current position marker
-        if (_currentPosition != null)
-          MarkerLayer(
-            markers: [
-              Marker(
-                point: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-                child: Container(
-                  width: 20,
-                  height: 20,
-                  decoration: BoxDecoration(
-                    color: Colors.blue,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 3),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black26,
-                        blurRadius: 4,
-                        offset: Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: _heading != null
-                      ? Transform.rotate(
-                          angle: (_heading! > 0 ? _heading! : 0) * math.pi / 180,
-                          child: Icon(Icons.navigation, color: Colors.white, size: 12),
-                        )
-                      : Icon(Icons.person, color: Colors.white, size: 12),
-                ),
-              ),
-            ],
-          ),
-
-        // Team members
-        if (_isTeamMode && _showTeamMembers)
-          MarkerLayer(
-            markers: _teamMembers.map((member) => Marker(
-              point: member.currentPosition ?? LatLng(0, 0), // FIXED: Use currentPosition, not lastKnownPosition
-              child: Container(
-                width: 16,
-                height: 16,
-                decoration: BoxDecoration(
-                  color: member.markerColor,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 2),
-                ),
-                child: member.isOnline
-                    ? Icon(Icons.person, color: Colors.white, size: 8)
-                    : Icon(Icons.person_outline, color: Colors.white, size: 8),
-              ),
-            )).where((marker) => (marker.point.latitude != 0 || marker.point.longitude != 0)).toList(), // Filter out null positions
-          ),
-      ],
-    );
-  }
-
-  // FIXED: Enhanced location follow button with immediate action
-  Widget _buildLocationFollowButton() {
-    return GestureDetector(
-      onTap: () {
-        setState(() {
-          _followLocation = !_followLocation;
-        });
-        
-        // FIXED: Immediately center on current location when enabled
-        if (_followLocation && _currentPosition != null && _isMapReady) {
-          try {
-            LatLng currentLocation = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
-            _mapController.move(currentLocation, _mapController.camera.zoom);
-            print('Follow location enabled - centered on: $currentLocation');
-          } catch (e) {
-            print('Error centering on location: $e');
-          }
-        }
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(_followLocation 
-                ? 'Location following enabled' 
-                : 'Location following disabled'),
-            backgroundColor: _followLocation ? Colors.green : Colors.orange,
-            duration: Duration(seconds: 2),
-          ),
-        );
-      },
-      child: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: _followLocation ? Colors.blue.withOpacity(0.9) : Colors.grey.withOpacity(0.9),
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black26,
-              blurRadius: 4,
-              offset: Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Icon(
-          _followLocation ? Icons.my_location : Icons.location_searching,
-          color: Colors.white,
-          size: 20,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildFloatingStatusWidgets() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // GPS Status
-        Container(
-          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: _isGpsCalibrated ? Colors.green.withOpacity(0.9) : Colors.red.withOpacity(0.9),
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black26,
-                blurRadius: 4,
-                offset: Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                _isGpsCalibrated ? Icons.gps_fixed : Icons.gps_not_fixed,
-                size: 18,
-                color: Colors.white,
-              ),
-              SizedBox(width: 6),
-              Text(
-                'GPS: ±${_gpsAccuracy.toStringAsFixed(1)}m',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ),
-        
-        SizedBox(height: 8),
-        
-        // FIXED: Magnetometer Status with correct units
-        Container(
-          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: _isMagneticCalibrated ? Colors.blue.withOpacity(0.9) : Colors.orange.withOpacity(0.9),
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black26,
-                blurRadius: 4,
-                offset: Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                _isMagneticCalibrated ? Icons.compass_calibration : Icons.warning,
-                size: 18,
-                color: Colors.white,
-              ),
-              SizedBox(width: 6),
-              Text(
-                'Mag: ${_totalField.toStringAsFixed(1)}μT', // FIXED: Show μT instead of nT
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  // FIXED: Magnetic scale with correct units and range
-  Widget _buildMagneticScale() {
-    return Container(
-      width: 200,
-      height: 40,
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.95),
-        borderRadius: BorderRadius.circular(8),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black26,
-            blurRadius: 4,
-            offset: Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          // FIXED: Title with correct units
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Text(
-              'Magnetic Field (μT)', // Changed from (nT) to (μT)
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-                color: Colors.black87,
-              ),
-            ),
-          ),
-          
-          // Color scale bar with corrected labels
-          Expanded(
-            child: Container(
-              margin: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(4),
-                gradient: LinearGradient(
-                  colors: [
-                    Colors.blue[900]!,
-                    Colors.cyan,
-                    Colors.green,
-                    Colors.yellow,
-                    Colors.red[900]!,
-                  ],
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Padding(
-                    padding: EdgeInsets.only(left: 4),
-                    child: Text(
-                      '${MIN_MAGNETIC_FIELD.toInt()}', // Will show "20"
-                      style: TextStyle(fontSize: 8, color: Colors.white, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                  Padding(
-                    padding: EdgeInsets.only(right: 4),
-                    child: Text(
-                      '${MAX_MAGNETIC_FIELD.toInt()}', // Will show "70"
-                      style: TextStyle(fontSize: 8, color: Colors.white, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCollapsibleTaskBar() {
-    return Positioned(
-      bottom: 20,
-      left: 20,
-      child: GestureDetector(
-        onTap: () {
-          setState(() {
-            _isTaskBarCollapsed = !_isTaskBarCollapsed;
-          });
-          if (_isTaskBarCollapsed) {
-            _taskBarAnimationController.forward();
-          } else {
-            _taskBarAnimationController.reverse();
-          }
-        },
-        child: AnimatedBuilder(
-          animation: _taskBarAnimation,
-          builder: (context, child) {
-            return Container(
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.95),
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black26,
-                    blurRadius: 8,
-                    offset: Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.blue[800],
-                      borderRadius: _isTaskBarCollapsed 
-                          ? BorderRadius.circular(12)
-                          : BorderRadius.only(
-                              topLeft: Radius.circular(12),
-                              topRight: Radius.circular(12),
-                            ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.analytics, color: Colors.white, size: 18),
-                        SizedBox(width: 8),
-                        Text(
-                          'Survey Stats',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
-                          ),
-                        ),
-                        SizedBox(width: 8),
-                        Icon(
-                          _isTaskBarCollapsed 
-                              ? Icons.keyboard_arrow_up 
-                              : Icons.keyboard_arrow_down,
-                          color: Colors.white,
-                          size: 18,
-                        ),
-                      ],
-                    ),
-                  ),
-                  
-                  if (!_isTaskBarCollapsed)
-                    Container(
-                      padding: EdgeInsets.all(16),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              _buildStatItem('Points', _pointCount.toString(), Icons.location_on),
-                              SizedBox(width: 20),
-                              _buildStatItem('Coverage', '${_coveragePercentage.toStringAsFixed(1)}%', Icons.grid_on),
-                            ],
-                          ),
-                          SizedBox(height: 12),
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              _buildStatItem('Field', '${_totalField.toStringAsFixed(1)}μT', Icons.sensors),
-                              SizedBox(width: 20),
-                              _buildStatItem('Accuracy', '±${_gpsAccuracy.toStringAsFixed(1)}m', Icons.gps_fixed),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStatItem(String label, String value, IconData icon) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 14, color: Colors.grey[600]),
-            SizedBox(width: 4),
-            Text(
-              value,
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 12,
-                color: Colors.black87,
-              ),
-            ),
-          ],
-        ),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 9,
-            color: Colors.grey[600],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildDataBanner() {
-    return Container(
-      padding: EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.green.withOpacity(0.95),
-        borderRadius: BorderRadius.circular(8),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black26,
-            blurRadius: 4,
-            offset: Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.check_circle, color: Colors.white, size: 20),
-          SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'Data collected! GPS: ±${_gpsAccuracy.toStringAsFixed(1)}m, Altitude: ${_currentPosition?.altitude.toStringAsFixed(1) ?? "N/A"}m',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-              ),
-            ),
-          ),
-          IconButton(
-            icon: Icon(Icons.close, color: Colors.white, size: 18),
-            onPressed: () {
-              setState(() {
-                _showDataBanner = false;
-              });
-              _bannerHideTimer?.cancel();
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-Widget _buildFloatingActionButtons() {
-  return Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      // MAP ORIENTATION BUTTON - NEW (add this as the first button)
-      FloatingActionButton.small(
-        heroTag: "map_orientation",
-        onPressed: _toggleMapOrientation,
-        backgroundColor: _isMapOrientationEnabled ? Colors.deepPurple : Colors.grey,
-        child: Icon(
-          _isMapOrientationEnabled ? Icons.explore : Icons.explore_outlined,
-          color: Colors.white,
-          size: 20,
-        ),
-        tooltip: _isMapOrientationEnabled 
-            ? 'Disable Map Orientation' 
-            : 'Enable Map Orientation',
-      ),
-      
-      SizedBox(height: 12),
-      
-      // YOUR EXISTING BUTTONS (keep all your existing floating action buttons here)
-      // Manual Recording Button
-      FloatingActionButton(
-        heroTag: "manual_record",
-        onPressed: _recordMagneticReading,
-        backgroundColor: Colors.green,
-        child: Icon(Icons.add_location, color: Colors.white),
-        tooltip: 'Record Point',
-      ),
-      
-      SizedBox(height: 12),
-      
-      // Auto Recording Toggle Button
-      FloatingActionButton(
-        heroTag: "auto_record", 
-        onPressed: _toggleAutomaticCollection,
-        backgroundColor: _isCollecting ? Colors.red : Colors.blue,
-        child: Icon(
-          _isCollecting ? Icons.stop : Icons.play_arrow, 
-          color: Colors.white
-        ),
-        tooltip: _isCollecting ? 'Stop Auto Recording' : 'Start Auto Recording',
-      ),
-      
-      SizedBox(height: 12),
-      
-      // Compass Toggle Button (keep your existing compass button)
-      FloatingActionButton.small(
-        heroTag: "compass_toggle",
-        onPressed: () => setState(() => _showCompass = !_showCompass),
-        backgroundColor: _showCompass ? Colors.purple : Colors.grey,
-        child: Icon(
-          _showCompass ? Icons.explore_off : Icons.compass_calibration, 
-          color: Colors.white,
-          size: 20,
-        ),
-        tooltip: _showCompass ? 'Hide Compass' : 'Show Compass',
-      ),
-      
-      // ADD ANY OTHER EXISTING BUTTONS YOU HAVE HERE...
-    ],
-  );
-}
-
-  PreferredSizeWidget _buildMinimalAppBar() {
-    return AppBar(
-      title: Text(
-        widget.project?.name ?? 'Survey Session',
-        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-      ),
-      backgroundColor: Colors.blue[800],
-      foregroundColor: Colors.white,
-      elevation: 0,
-      actions: [
-        IconButton(
-          icon: Icon(Icons.download),
-          onPressed: _exportSurveyData,
-          tooltip: 'Export Survey Data',
-        ),
-        IconButton(
-          icon: Icon(Icons.settings),
-          onPressed: _showSettings,
-          tooltip: 'Settings & Teams',
-        ),
-      ],
-    );
-  }
-
-  // ==================== HELPER METHODS ====================
-
-void _updateCoverageStats() {
-  if (_gridCells.isNotEmpty) {
-    _completedCells = _gridCells.where((cell) => cell.status == GridCellStatus.completed).length;
-    _coveragePercentage = (_completedCells / _gridCells.length) * 100.0;
-  } else {
-    _completedCells = 0;
-    _coveragePercentage = 0.0;
-  }
-  
-  // Use Set to avoid double counting points
-  Set<String> uniquePoints = {};
-  
-  // Add collected points (current session)
-  for (var point in _collectedPoints) {
-    uniquePoints.add('${point.latitude.toStringAsFixed(6)},${point.longitude.toStringAsFixed(6)}');
-  }
-  
-  // Add saved readings (from database)
-  for (var reading in _savedReadings) {
-    uniquePoints.add('${reading.latitude.toStringAsFixed(6)},${reading.longitude.toStringAsFixed(6)}');
-  }
-  
-  _pointCount = uniquePoints.length;
-}
-
-  Color _getCellColor(GridCellStatus status) {
-    switch (status) {
-      case GridCellStatus.notStarted:
-        return Colors.grey;
-      case GridCellStatus.inProgress:
-        return Colors.orange;
-      case GridCellStatus.completed:
-        return Colors.green;
-    }
-  }
-
-  void _navigateToGridCenter() {
-    if (widget.gridCenter == null || !_isMapReady) return;
-    
-    try {
-      double zoomLevel = 15.0;
-      if (_gridCells.isNotEmpty) {
-        zoomLevel = _calculateOptimalZoom();
-      }
-      
-      print('Moving to grid center: ${widget.gridCenter} with zoom: $zoomLevel');
-      _mapController.move(widget.gridCenter!, zoomLevel);
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Grid loaded - ${_gridCells.length} cells ready for survey'),
-          backgroundColor: Colors.green,
-          duration: Duration(seconds: 2),
-        ),
-      );
-    } catch (e) {
-      print('Error navigating to grid center: $e');
-    }
-  }
-
-  double _calculateOptimalZoom() {
-    if (_gridCells.isEmpty) return 16.0;
-    
-    double minLat = double.infinity;
-    double maxLat = -double.infinity;
-    double minLng = double.infinity;
-    double maxLng = -double.infinity;
-    
-    for (var cell in _gridCells) {
-      for (var point in cell.bounds) {
-        minLat = math.min(minLat, point.latitude);
-        maxLat = math.max(maxLat, point.latitude);
-        minLng = math.min(minLng, point.longitude);
-        maxLng = math.max(maxLng, point.longitude);
-      }
-    }
-    
-    double latDiff = maxLat - minLat;
-    double lngDiff = maxLng - minLng;
-    double maxDiff = math.max(latDiff, lngDiff);
-    
-    if (maxDiff > 0.01) return 13.0;
-    if (maxDiff > 0.005) return 14.0;
-    if (maxDiff > 0.002) return 15.0;
-    return 16.0;
-  }
-
-  LatLngBounds? _calculateGridBounds() {
-    if (_gridCells.isEmpty) return null;
-    
-    double minLat = double.infinity;
-    double maxLat = -double.infinity;
-    double minLng = double.infinity;
-    double maxLng = -double.infinity;
-    
-    for (var cell in _gridCells) {
-      for (var corner in cell.bounds) {
-        minLat = math.min(minLat, corner.latitude);
-        maxLat = math.max(maxLat, corner.latitude);
-        minLng = math.min(minLng, corner.longitude);
-        maxLng = math.max(maxLng, corner.longitude);
-      }
-    }
-    
-    return LatLngBounds(
-      LatLng(minLat, minLng),
-      LatLng(maxLat, maxLng),
-    );
-  }
-
-  bool _isPositionInBounds(LatLng position, LatLngBounds bounds) {
-    return position.latitude >= bounds.south &&
-           position.latitude <= bounds.north &&
-           position.longitude >= bounds.west &&
-           position.longitude <= bounds.east;
-  }
-
-void _findNextTargetCell() {
-  if (_gridCells.isEmpty) return;
-
-  GridCell? nextCell;
-  
-  // Priority 1: Find cells that need more points (have 1 point, need 2)
-  for (var cell in _gridCells) {
-    if (cell.status == GridCellStatus.inProgress && cell.pointCount < 2) {
-      nextCell = cell;
-      break;
-    }
-  }
-  
-  // Priority 2: Find completely unstarted cells
-  if (nextCell == null) {
-    for (var cell in _gridCells) {
-      if (cell.status == GridCellStatus.notStarted) {
-        nextCell = cell;
-        break;
-      }
-    }
-  }
-
-  setState(() {
-    _nextTargetCell = nextCell;
-    _currentCell = nextCell;
-  });
-
-  print('Next target cell: ${nextCell?.id ?? "none"} (${nextCell?.pointCount ?? 0}/2 points)');
-}
-
-
-double _getDistanceToCell(LatLng userLocation, GridCell cell) {
-  // Calculate distance to center of cell
-  return Geolocator.distanceBetween(
-    userLocation.latitude, 
-    userLocation.longitude,
-    cell.centerLat, 
-    cell.centerLon
-  );
-}
-
-  void _onMapTap(TapPosition tapPosition, LatLng point) {
-    print('Map tapped at: ${point.latitude}, ${point.longitude}');
-    
-    if (_surveyMode == 'manual' && !_isCollecting) {
-      _recordMagneticReading();
-    }
-    
-    if (_gridCells.isNotEmpty) {
-      for (var cell in _gridCells) {
-        if (_isPointInCell(point, cell)) {
-          setState(() {
-            _currentCell = cell;
-            if (cell.status == GridCellStatus.notStarted) {
-              cell.status = GridCellStatus.inProgress;
-              cell.startTime = DateTime.now();
-            }
-          });
-          break;
-        }
-      }
-    }
-  }
-
-  void _showGpsGuidance() {
-    if (!mounted) return;
-    
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            Icon(Icons.warning, color: Colors.white),
-            SizedBox(width: 8),
-            Expanded(
-              child: Text('GPS accuracy is poor. Move to open sky for better signal.'),
-            ),
-          ],
-        ),
-        backgroundColor: Colors.orange,
-        duration: Duration(seconds: 3),
-      ),
-    );
-  }
-
-  // ==================== CALIBRATION ====================
 
   void _calibrateMagnetic() {
     showDialog(
@@ -1637,166 +567,600 @@ double _getDistanceToCell(LatLng userLocation, GridCell cell) {
     );
   }
 
-  void _checkGpsQuality() async {
-    if (_currentPosition == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('No GPS position available'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-
-    setState(() {
-      _isGpsCalibrated = _gpsAccuracy < 10.0;
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            Icon(
-              _isGpsCalibrated ? Icons.check_circle : Icons.warning,
-              color: Colors.white,
+  // UI COMPONENTS
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: _buildMinimalAppBar(),
+      body: Stack(
+        children: [
+          _buildFullScreenMapView(),
+          
+          Positioned(
+            top: 10,
+            left: 10,
+            child: _buildFloatingStatusWidgets(),
+          ),
+          
+          Positioned(
+            top: 80,
+            right: 10,
+            child: _buildLocationFollowButton(),
+          ),
+          
+          Positioned(
+            top: 10,
+            right: 10,
+            child: _buildMagneticScale(),
+          ),
+          
+          _buildCollapsibleTaskBar(),
+          
+          if (_showDataBanner)
+            Positioned(
+              top: 80,
+              left: 16,
+              right: 16,
+              child: _buildDataBanner(),
             ),
-            SizedBox(width: 8),
-            Text(_isGpsCalibrated 
-                ? 'GPS calibration complete!' 
-                : 'GPS signal still poor - try moving to open area'),
+        ],
+      ),
+      floatingActionButton: _buildFloatingActionButtons(),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+    );
+  }
+
+  Widget _buildFullScreenMapView() {
+    return FlutterMap(
+      mapController: _mapController,
+      options: MapOptions(
+        initialCenter: _getInitialMapCenter(),
+        initialZoom: _currentPosition != null ? 16.0 : 10.0,
+        maxZoom: 20.0,
+        minZoom: 3.0,
+        onMapReady: () {
+          setState(() {
+            _isMapReady = true;
+          });
+        },
+        onTap: _onMapTap,
+      ),
+      children: [
+        _buildBaseMapLayer(),
+        
+        if (_showGrid && _gridCells.isNotEmpty)
+          PolygonLayer(
+            polygons: _gridCells.map((cell) => Polygon(
+              points: cell.bounds,
+              color: _getCellColor(cell.status).withOpacity(0.3),
+              borderColor: _getCellColor(cell.status),
+              borderStrokeWidth: 2.0,
+            )).toList(),
+          ),
+
+        if (_collectedPoints.isNotEmpty)
+          CircleLayer(
+            circles: _collectedPoints.map((point) => CircleMarker(
+              point: point,
+              radius: 4,
+              color: getMagneticFieldColor(_totalField),
+              borderColor: Colors.white,
+              borderStrokeWidth: 1,
+            )).toList(),
+          ),
+
+        if (_currentPosition != null) ...[
+          CircleLayer(
+            circles: [
+              CircleMarker(
+                point: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+                radius: 12,
+                color: Colors.blue.withOpacity(0.3),
+                borderColor: Colors.blue,
+                borderStrokeWidth: 2,
+              ),
+            ],
+          ),
+          if (_heading != null)
+            MarkerLayer(
+              markers: [
+                Marker(
+                  point: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+                  child: Transform.rotate(
+                    angle: (_heading ?? 0) * math.pi / 180,
+                    child: Icon(
+                      Icons.navigation,
+                      color: Colors.blue,
+                      size: 24,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildFloatingActionButtons() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        FloatingActionButton.small(
+          heroTag: "magnetometer_toggle",
+          onPressed: _toggleMagnetometer,
+          backgroundColor: _isMagnetometerActive ? Colors.purple : Colors.grey,
+          child: Icon(
+            _isMagnetometerActive ? Icons.sensors : Icons.sensors_off,
+            color: Colors.white,
+            size: 20,
+          ),
+          tooltip: _isMagnetometerActive ? 'Stop Mag Reading' : 'Start Mag Reading',
+        ),
+        
+        SizedBox(height: 12),
+        
+        FloatingActionButton(
+          heroTag: "manual_record",
+          onPressed: _recordMagneticReading,
+          backgroundColor: Colors.green,
+          child: Icon(Icons.add_location, color: Colors.white),
+          tooltip: 'Record Point',
+        ),
+        
+        SizedBox(height: 12),
+        
+        FloatingActionButton(
+          heroTag: "auto_record", 
+          onPressed: _toggleAutomaticCollection,
+          backgroundColor: _isCollecting ? Colors.red : Colors.blue,
+          child: Icon(
+            _isCollecting ? Icons.stop : Icons.play_arrow, 
+            color: Colors.white
+          ),
+          tooltip: _isCollecting ? 'Stop Auto Recording' : 'Start Auto Recording',
+        ),
+        
+        SizedBox(height: 12),
+        
+        FloatingActionButton.small(
+          heroTag: "compass_toggle",
+          onPressed: () => setState(() => _showCompass = !_showCompass),
+          backgroundColor: _showCompass ? Colors.purple : Colors.grey,
+          child: Icon(
+            _showCompass ? Icons.explore_off : Icons.compass_calibration, 
+            color: Colors.white,
+            size: 20,
+          ),
+          tooltip: _showCompass ? 'Hide Compass' : 'Show Compass',
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBaseMapLayer() {
+    switch (_currentBaseLayer) {
+      case MapBaseLayer.openStreetMap:
+        return TileLayer(
+          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          userAgentPackageName: 'com.example.magnetic_survey_app',
+        );
+      case MapBaseLayer.satellite:
+        return TileLayer(
+          urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+          userAgentPackageName: 'com.example.magnetic_survey_app',
+        );
+      case MapBaseLayer.emag2Magnetic:
+        return TileLayer(
+          urlTemplate: 'https://maps.ngdc.noaa.gov/arcgis/rest/services/web_mercator/emag2_magnetic_anomaly/MapServer/tile/{z}/{y}/{x}',
+          userAgentPackageName: 'com.example.magnetic_survey_app',
+        );
+    }
+  }
+
+  PreferredSizeWidget _buildMinimalAppBar() {
+    return AppBar(
+      title: Text(
+        widget.project?.name ?? 'Survey Session',
+        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+      ),
+      backgroundColor: Colors.blue[800],
+      foregroundColor: Colors.white,
+      elevation: 0,
+      actions: [
+        IconButton(
+          icon: Icon(Icons.download),
+          onPressed: _exportSurveyData,
+          tooltip: 'Export Survey Data',
+        ),
+        IconButton(
+          icon: Icon(Icons.settings),
+          onPressed: _showSettings,
+          tooltip: 'Settings & Teams',
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLocationFollowButton() {
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _followLocation = !_followLocation;
+        });
+        
+        if (_followLocation && _currentPosition != null && _isMapReady) {
+          try {
+            LatLng currentLocation = LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
+            _mapController.move(currentLocation, _mapController.camera.zoom);
+          } catch (e) {
+            print('Error centering on location: $e');
+          }
+        }
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_followLocation 
+                ? 'Location following enabled' 
+                : 'Location following disabled'),
+            backgroundColor: _followLocation ? Colors.green : Colors.orange,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      },
+      child: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: _followLocation ? Colors.blue.withOpacity(0.9) : Colors.grey.withOpacity(0.9),
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black26,
+              blurRadius: 4,
+              offset: Offset(0, 2),
+            ),
           ],
         ),
-        backgroundColor: _isGpsCalibrated ? Colors.green : Colors.orange,
+        child: Icon(
+          _followLocation ? Icons.my_location : Icons.location_searching,
+          color: Colors.white,
+          size: 20,
+        ),
       ),
     );
   }
 
-  // ==================== SETTINGS ====================
-
-  void _showSettings() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Settings & Teams'),
-        content: SingleChildScrollView(
-          child: Column(
+  Widget _buildFloatingStatusWidgets() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: (_isGpsCalibrated && _gpsAccuracy <= 10.0) 
+                ? Colors.green.withOpacity(0.9) 
+                : Colors.orange.withOpacity(0.9),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black26,
+                blurRadius: 4,
+                offset: Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('Survey Settings', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              SizedBox(height: 8),
-              
-              ListTile(
-                title: Text('Magnetic Pull Rate'),
-                subtitle: Text('How often to collect data automatically'),
-                trailing: DropdownButton<Duration>(
-                  value: _magneticPullRate,
-                  items: [
-                    DropdownMenuItem(value: Duration(milliseconds: 500), child: Text('0.5s')),
-                    DropdownMenuItem(value: Duration(seconds: 1), child: Text('1s')),
-                    DropdownMenuItem(value: Duration(seconds: 2), child: Text('2s')),
-                    DropdownMenuItem(value: Duration(seconds: 5), child: Text('5s')),
-                    DropdownMenuItem(value: Duration(seconds: 10), child: Text('10s')),
-                  ],
-                  onChanged: (Duration? value) {
-                    if (value != null) {
-                      setState(() => _magneticPullRate = value);
-                      _restartAutomaticCollection();
-                      Navigator.pop(context);
-                    }
-                  },
-                ),
+              Icon(
+                (_isGpsCalibrated && _gpsAccuracy <= 10.0) ? Icons.gps_fixed : Icons.gps_not_fixed,
+                size: 18,
+                color: Colors.white,
               ),
-              
-              ListTile(
-                title: Text('Base Map Layer'),
-                subtitle: Text(_getBaseLayerName(_currentBaseLayer)),
-                trailing: DropdownButton<MapBaseLayer>(
-                  value: _currentBaseLayer,
-                  items: [
-                    DropdownMenuItem(value: MapBaseLayer.openStreetMap, child: Text('OpenStreetMap')),
-                    DropdownMenuItem(value: MapBaseLayer.satellite, child: Text('Satellite')),
-                    DropdownMenuItem(value: MapBaseLayer.emag2Magnetic, child: Text('EMAG2 Magnetic')),
-                  ],
-                  onChanged: (MapBaseLayer? value) {
-                    if (value != null) {
-                      setState(() => _currentBaseLayer = value);
-                      Navigator.pop(context);
-                    }
-                  },
-                ),
-              ),
-
-              Divider(),
-              
-              Text('Team Collaboration', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              SizedBox(height: 8),
-              
-              SwitchListTile(
-                title: Text('Enable Team Mode'),
-                subtitle: Text('Collaborate with other surveyors'),
-                value: _isTeamMode,
-                onChanged: (bool value) {
-                  setState(() => _isTeamMode = value);
-                  if (value) {
-                    _initializeTeamMode();
-                  } else {
-                    _teamService?.dispose();
-                  }
-                },
-              ),
-
-              if (_isTeamMode) ...[
-                ListTile(
-                  title: Text('Team Members (${_teamMembers.length})'),
-                  subtitle: Text('Tap to manage team'),
-                  trailing: Icon(Icons.group),
-                  onTap: _showTeamPanel,
-                ),
-                
-                SwitchListTile(
-                  title: Text('Show Team on Map'),
-                  value: _showTeamMembers,
-                  onChanged: (bool value) {
-                    setState(() => _showTeamMembers = value);
-                  },
-                ),
-              ],
-
-              Divider(),
-              
-              Text('Sensor Calibration', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              SizedBox(height: 8),
-              
-              ListTile(
-                leading: Icon(
-                  _isMagneticCalibrated ? Icons.check_circle : Icons.warning,
-                  color: _isMagneticCalibrated ? Colors.green : Colors.orange,
-                ),
-                title: Text('Magnetometer'),
-                subtitle: Text(_isMagneticCalibrated ? 'Calibrated' : 'Needs calibration'),
-                trailing: ElevatedButton(
-                  onPressed: _calibrateMagnetic,
-                  child: Text('Calibrate'),
-                ),
-              ),
-              
-              ListTile(
-                leading: Icon(
-                  _isGpsCalibrated ? Icons.check_circle : Icons.warning,
-                  color: _isGpsCalibrated ? Colors.green : Colors.orange,
-                ),
-                title: Text('GPS Sensor'),
-                subtitle: Text(_isGpsCalibrated ? 'Good signal' : 'Poor signal'),
-                trailing: ElevatedButton(
-                  onPressed: _checkGpsQuality,
-                  child: Text('Check'),
+              SizedBox(width: 6),
+              Text(
+                'GPS: ±${_gpsAccuracy.toStringAsFixed(1)}m',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
                 ),
               ),
             ],
           ),
         ),
+        
+        SizedBox(height: 8),
+        
+        Container(
+          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: _isMagnetometerActive 
+                ? Colors.purple.withOpacity(0.9) 
+                : Colors.grey.withOpacity(0.9),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black26,
+                blurRadius: 4,
+                offset: Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                _isMagnetometerActive ? Icons.sensors : Icons.sensors_off,
+                size: 18,
+                color: Colors.white,
+              ),
+              SizedBox(width: 6),
+              Text(
+                '${_totalField.toStringAsFixed(1)}μT',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMagneticScale() {
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.9),
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 2)],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('Mag:', style: TextStyle(fontSize: 8, fontWeight: FontWeight.bold)),
+          SizedBox(width: 4),
+          Container(
+            width: 60,
+            height: 8,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(4),
+              gradient: LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [
+                  Colors.blue[900]!,
+                  Colors.cyan,
+                  Colors.green,
+                  Colors.yellow,
+                  Colors.red,
+                ],
+              ),
+            ),
+          ),
+          SizedBox(width: 4),
+          Text('${MIN_MAGNETIC_FIELD.toInt()}-${MAX_MAGNETIC_FIELD.toInt()}μT', 
+               style: TextStyle(fontSize: 8)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCollapsibleTaskBar() {
+    return AnimatedBuilder(
+      animation: _taskBarAnimation,
+      builder: (context, child) {
+        return Positioned(
+          bottom: _taskBarAnimation.value * -120,
+          left: 0,
+          right: 0,
+          child: Container(
+            margin: EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.95),
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black26,
+                  blurRadius: 8,
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _isTaskBarCollapsed = !_isTaskBarCollapsed;
+                    });
+                    if (_isTaskBarCollapsed) {
+                      _taskBarAnimationController.forward();
+                    } else {
+                      _taskBarAnimationController.reverse();
+                    }
+                  },
+                  child: Container(
+                    padding: EdgeInsets.all(12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          'Survey Stats',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue[800],
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Icon(
+                          _isTaskBarCollapsed 
+                              ? Icons.keyboard_arrow_up 
+                              : Icons.keyboard_arrow_down,
+                          color: Colors.blue[800],
+                          size: 18,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                
+                if (!_isTaskBarCollapsed)
+                  Container(
+                    padding: EdgeInsets.all(16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            _buildStatItem('Points', _pointCount.toString(), Icons.location_on),
+                            _buildStatItem('Coverage', '${_coveragePercentage.toStringAsFixed(1)}%', Icons.grid_on),
+                          ],
+                        ),
+                        SizedBox(height: 12),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            _buildStatItem('Field', '${_totalField.toStringAsFixed(1)}μT', Icons.sensors),
+                            _buildStatItem('Accuracy', '±${_gpsAccuracy.toStringAsFixed(1)}m', Icons.gps_fixed),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildStatItem(String label, String value, IconData icon) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: Colors.grey[600]),
+            SizedBox(width: 4),
+            Text(
+              value,
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+                color: Colors.black87,
+              ),
+            ),
+          ],
+        ),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 9,
+            color: Colors.grey[600],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDataBanner() {
+    int actualPointCount = _savedReadings.length;
+    
+    return Container(
+      padding: EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.green.withOpacity(0.95),
+        borderRadius: BorderRadius.circular(8),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black26,
+            blurRadius: 4,
+            offset: Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.check_circle, color: Colors.white, size: 20),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Point recorded! Total: $actualPointCount readings',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+          ),
+          IconButton(
+            icon: Icon(Icons.close, color: Colors.white, size: 18),
+            onPressed: () {
+              setState(() {
+                _showDataBanner = false;
+              });
+              _bannerHideTimer?.cancel();
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  // HELPER METHODS
+  LatLng _getInitialMapCenter() {
+    if (widget.gridCenter != null) {
+      return widget.gridCenter!;
+    }
+    
+    if (_currentPosition != null && _currentPosition!.accuracy < 100) {
+      return LatLng(_currentPosition!.latitude, _currentPosition!.longitude);
+    }
+    
+    return LatLng(0.0, 0.0);
+  }
+
+  // POINT INFO POPUPS
+  void _showPointInfo(LatLng point, int index) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Survey Point ${index + 1}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('📍 Location', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('Lat: ${point.latitude.toStringAsFixed(6)}°'),
+            Text('Lon: ${point.longitude.toStringAsFixed(6)}°'),
+            SizedBox(height: 12),
+            Text('🧲 Magnetic Data', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('Total Field: ${_totalField.toStringAsFixed(1)} μT'),
+            Text('X: ${_magneticX.toStringAsFixed(1)} μT'),
+            Text('Y: ${_magneticY.toStringAsFixed(1)} μT'),
+            Text('Z: ${_magneticZ.toStringAsFixed(1)} μT'),
+            SizedBox(height: 12),
+            Text('⏰ Collection Time', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('${DateTime.now().toString().split('.')[0]}'),
+            SizedBox(height: 12),
+            Text('🎯 GPS Info', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('Accuracy: ±${_gpsAccuracy.toStringAsFixed(1)}m'),
+            if (_heading != null)
+              Text('Heading: ${_heading!.toStringAsFixed(1)}°'),
+          ],
+        ),
         actions: [
-          ElevatedButton(
+          TextButton(
             onPressed: () => Navigator.pop(context),
             child: Text('Close'),
           ),
@@ -1805,165 +1169,267 @@ double _getDistanceToCell(LatLng userLocation, GridCell cell) {
     );
   }
 
-  String _getBaseLayerName(MapBaseLayer layer) {
-    switch (layer) {
-      case MapBaseLayer.openStreetMap:
-        return 'OpenStreetMap';
-      case MapBaseLayer.satellite:
-        return 'Satellite';
-      case MapBaseLayer.emag2Magnetic:
-        return 'EMAG2 Magnetic';
-    }
-  }
-
-  void _restartAutomaticCollection() {
-    if (_isCollecting) {
-      _stopAutomaticCollection();
-      _startAutomaticCollection();
-    }
-  }
-
-  // ==================== TEAM FUNCTIONALITY ====================
-
-  void _initializeTeamMode() {
-    _teamService = TeamSyncService.instance;
-    _teamSubscription = _teamService!.teamMembersStream.listen((members) {
-      setState(() {
-        _teamMembers = members;
-      });
-    });
-  }
-
-  void _showTeamPanel() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
-        expand: false,
-        builder: (context, scrollController) => Container(
-          padding: EdgeInsets.all(16),
-          child: Column(
-            children: [
-              Text(
-                'Team Management',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              SizedBox(height: 16),
-              Expanded(
-                child: ListView.builder(
-                  controller: scrollController,
-                  itemCount: _teamMembers.length,
-                  itemBuilder: (context, index) {
-                    final member = _teamMembers[index];
-                    return ListTile(
-                      leading: Container(
-                        width: 20,
-                        height: 20,
-                        decoration: BoxDecoration(
-                          color: member.markerColor,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      title: Text(member.name),
-                      subtitle: Text(member.isOnline ? 'Online' : 'Offline'),
-                      trailing: IconButton(
-                        icon: Icon(Icons.remove_circle, color: Colors.red),
-                        onPressed: () => _removeTeamMember(member),
-                      ),
-                    );
-                  },
-                ),
-              ),
-              ElevatedButton.icon(
-                onPressed: _addTeamMember,
-                icon: Icon(Icons.person_add),
-                label: Text('Add Team Member'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue,
-                  foregroundColor: Colors.white,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _addTeamMember() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Team member invitation feature coming soon!'),
-        backgroundColor: Colors.blue,
-      ),
-    );
-  }
-
-  void _removeTeamMember(TeamMember member) {
+  void _showReadingInfo(MagneticReading reading, int index) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Remove Team Member'),
-        content: Text('Remove ${member.name} from the team?'),
+        title: Text('Reading ${index + 1}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('📍 Location', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('Lat: ${reading.latitude.toStringAsFixed(6)}°'),
+            Text('Lon: ${reading.longitude.toStringAsFixed(6)}°'),
+            Text('Alt: ${reading.altitude.toStringAsFixed(1)}m'),
+            SizedBox(height: 12),
+            Text('🧲 Magnetic Data', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('Total Field: ${reading.totalField.toStringAsFixed(1)} μT'),
+            Text('X: ${reading.magneticX.toStringAsFixed(1)} μT'),
+            Text('Y: ${reading.magneticY.toStringAsFixed(1)} μT'),
+            Text('Z: ${reading.magneticZ.toStringAsFixed(1)} μT'),
+            SizedBox(height: 12),
+            Text('⏰ Recorded', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('${reading.timestamp.toString().split('.')[0]}'),
+            SizedBox(height: 12),
+            Text('🎯 GPS Quality', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('Accuracy: ±${reading.accuracy.toStringAsFixed(1)}m'),
+            if (reading.heading != null)
+              Text('Heading: ${reading.heading!.toStringAsFixed(1)}°'),
+            if (reading.notes != null && reading.notes!.isNotEmpty) ...[
+              SizedBox(height: 12),
+              Text('📝 Notes', style: TextStyle(fontWeight: FontWeight.bold)),
+              Text('${reading.notes}'),
+            ],
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: Text('Cancel'),
+            child: Text('Close'),
           ),
-          ElevatedButton(
-            onPressed: () {
-              setState(() {
-                _teamMembers.remove(member);
-              });
-              Navigator.pop(context);
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('${member.name} removed from team'),
-                  backgroundColor: Colors.orange,
-                ),
-              );
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            child: Text('Remove', style: TextStyle(color: Colors.white)),
-          ),
+          if (!_isWebMode)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _deleteReading(reading, index);
+              },
+              child: Text('Delete', style: TextStyle(color: Colors.red)),
+            ),
         ],
       ),
     );
   }
 
-  // ==================== EXPORT FUNCTIONALITY ====================
+  void _deleteReading(MagneticReading reading, int index) async {
+    try {
+      if (!_isWebMode && reading.projectId != null) {
+        // Remove from database if it exists
+        // Note: You'll need to implement deleteReading in DatabaseService
+      }
+      
+      setState(() {
+        _savedReadings.removeAt(index);
+        _collectedPoints.removeWhere((point) => 
+          (point.latitude - reading.latitude).abs() < 0.000001 &&
+          (point.longitude - reading.longitude).abs() < 0.000001
+        );
+        _pointCount = _savedReadings.length;
+      });
+      
+      _updateCoverageStats();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Reading deleted'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error deleting reading: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
 
+  Color getMagneticFieldColor(double totalField) {
+    double normalized = (totalField - MIN_MAGNETIC_FIELD) / (MAX_MAGNETIC_FIELD - MIN_MAGNETIC_FIELD);
+    normalized = math.max(0.0, math.min(1.0, normalized));
+    
+    if (normalized < 0.25) {
+      double t = normalized / 0.25;
+      return Color.lerp(Colors.blue[900]!, Colors.cyan, t)!;
+    } else if (normalized < 0.5) {
+      double t = (normalized - 0.25) / 0.25;
+      return Color.lerp(Colors.cyan, Colors.green, t)!;
+    } else if (normalized < 0.75) {
+      double t = (normalized - 0.5) / 0.25;
+      return Color.lerp(Colors.green, Colors.yellow, t)!;
+    } else {
+      double t = (normalized - 0.75) / 0.25;
+      return Color.lerp(Colors.yellow, Colors.red, t)!;
+    }
+  }
+
+  Color _getCellColor(GridCellStatus status) {
+    switch (status) {
+      case GridCellStatus.notStarted:
+        return Colors.grey;
+      case GridCellStatus.inProgress:
+        return Colors.orange;
+      case GridCellStatus.completed:
+        return Colors.green;
+    }
+  }
+
+  void _updateCoverageStats() {
+    if (_gridCells.isNotEmpty) {
+      _completedCells = _gridCells.where((cell) => cell.status == GridCellStatus.completed).length;
+      _coveragePercentage = (_completedCells / _gridCells.length) * 100;
+    } else {
+      _completedCells = 0;
+      _coveragePercentage = 0.0;
+    }
+  }
+
+  Future<void> _loadPreviousSurveyData() async {
+    if (_isWebMode) return; // Skip database operations in web mode
+    
+    // Only try to load if we have a valid project with an ID
+    if (widget.project?.id == null) {
+      print('No valid project ID - skipping database load');
+      return;
+    }
+    
+    try {
+      final readings = await DatabaseService.instance.getReadingsForProject(widget.project!.id!);
+      if (mounted) {
+        setState(() {
+          _savedReadings = readings;
+          _collectedPoints.addAll(readings.map((r) => LatLng(r.latitude, r.longitude)));
+          _pointCount = readings.length;
+        });
+        _updateCoverageStats();
+      }
+    } catch (e) {
+      print('Error loading previous survey data: $e');
+      // Don't crash - just continue without previous data
+    }
+  }
+
+  void _onMapTap(TapPosition tapPosition, LatLng point) {
+    if (_surveyMode == 'manual' && !_isCollecting) {
+      _recordMagneticReading();
+    }
+  }
+
+  void _showGpsGuidance() {
+    if (!mounted) return;
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.warning, color: Colors.white),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text('GPS accuracy is poor. Move to open sky for better signal.'),
+            ),
+          ],
+        ),
+        backgroundColor: Colors.orange,
+        duration: Duration(seconds: 3),
+      ),
+    );
+  }
+
+  // EXPORT FUNCTIONALITY
   void _exportSurveyData() {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Export Survey Data'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'Choose export format:',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-              ),
-              SizedBox(height: 8),
-              Text(
-                'Project: ${widget.project?.name ?? "Current Survey"}\nPoints collected: $_pointCount',
-                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-              ),
-              SizedBox(height: 16),
-              
-              _buildExportFormatButton(ExportFormat.csv, Icons.table_chart, Colors.green),
-              SizedBox(height: 8),
-              _buildExportFormatButton(ExportFormat.geojson, Icons.map, Colors.blue),
-              SizedBox(height: 8),
-              _buildExportFormatButton(ExportFormat.kml, Icons.public, Colors.orange),
-              if (!_isWebMode) SizedBox(height: 8),
-              if (!_isWebMode) _buildExportFormatButton(ExportFormat.sqlite, Icons.storage, Colors.purple),
-              SizedBox(height: 8),
-              _buildExportFormatButton(ExportFormat.shapefile, Icons.layers, Colors.teal),
-            ],
+        title: Row(
+          children: [
+            Icon(Icons.download, color: Colors.blue),
+            SizedBox(width: 8),
+            Text('Export Survey Data'),
+          ],
+        ),
+        content: Container(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('Choose export format for your survey data:'),
+                SizedBox(height: 16),
+                Row(
+                  children: [
+                    Icon(Icons.info, size: 16, color: Colors.blue),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Data includes ${_pointCount} points and grid information',
+                        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                      ),
+                    ),
+                  ],
+                ),
+                SizedBox(height: 16),
+                
+                // CSV Export
+                _buildExportFormatButton(
+                  ExportFormat.csv, 
+                  Icons.table_chart, 
+                  Colors.green,
+                  'CSV Spreadsheet',
+                  'Compatible with Excel, Google Sheets'
+                ),
+                SizedBox(height: 8),
+                
+                // GeoJSON Export
+                _buildExportFormatButton(
+                  ExportFormat.geojson, 
+                  Icons.map, 
+                  Colors.blue,
+                  'GeoJSON',
+                  'GIS and web mapping compatible'
+                ),
+                SizedBox(height: 8),
+                
+                // KML Export
+                _buildExportFormatButton(
+                  ExportFormat.kml, 
+                  Icons.public, 
+                  Colors.orange,
+                  'Google Earth KML',
+                  'Compatible with Google Earth'
+                ),
+                SizedBox(height: 8),
+                
+                // SQLite Export (only on mobile)
+                if (!kIsWeb) _buildExportFormatButton(
+                  ExportFormat.sqlite, 
+                  Icons.storage, 
+                  Colors.purple,
+                  'SQLite Database',
+                  'Complete database backup'
+                ),
+                if (!kIsWeb) SizedBox(height: 8),
+                
+                // Shapefile Export
+                _buildExportFormatButton(
+                  ExportFormat.shapefile, 
+                  Icons.layers, 
+                  Colors.teal,
+                  'Shapefile (WKT)',
+                  'GIS shapefile format'
+                ),
+              ],
+            ),
           ),
         ),
         actions: [
@@ -1976,34 +1442,90 @@ double _getDistanceToCell(LatLng userLocation, GridCell cell) {
     );
   }
 
-  Widget _buildExportFormatButton(ExportFormat format, IconData icon, Color color) {
+  Widget _buildExportFormatButton(ExportFormat format, IconData icon, Color color, 
+                                   String title, String description) {
     return Container(
       width: double.infinity,
-      child: ElevatedButton.icon(
-        onPressed: () => _performExport(format),
-        icon: Icon(icon, size: 20),
-        label: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              _getFormatDisplayName(format),
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            Text(
-              _getFormatDescription(format),
-              style: TextStyle(fontSize: 10, fontWeight: FontWeight.normal),
-            ),
-          ],
-        ),
+      child: ElevatedButton(
+        onPressed: () {
+          Navigator.pop(context);
+          _performExport(format);
+        },
         style: ElevatedButton.styleFrom(
           backgroundColor: color,
           foregroundColor: Colors.white,
           padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-          alignment: Alignment.centerLeft,
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 24),
+            SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    description,
+                    style: TextStyle(fontSize: 12, color: Colors.white70),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
+  }
+
+  Future<void> _performExport(ExportFormat format) async {
+    try {
+      final project = widget.project ?? SurveyProject(
+        id: 1,
+        name: 'Survey Session',
+        description: 'Mobile survey data',
+        createdAt: DateTime.now(),
+      );
+
+      String exportData = await ExportService.instance.exportProject(
+        project: project,
+        readings: _savedReadings,
+        gridCells: _gridCells,
+        fieldNotes: [],
+        format: format,
+      );
+
+      if (kIsWeb) {
+        print('Web export: $exportData');
+      } else {
+        await Share.shareXFiles(
+          [XFile.fromData(
+            Uint8List.fromList(exportData.codeUnits),
+            name: '${project.name}_${_getFormatExtension(format)}.${_getFormatExtension(format)}',
+            mimeType: 'text/plain',
+          )],
+          text: 'Survey data exported from TerraMag Field',
+        );
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Export completed successfully!'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Export failed: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   String _getFormatDisplayName(ExportFormat format) {
@@ -2021,121 +1543,190 @@ double _getDistanceToCell(LatLng userLocation, GridCell cell) {
     }
   }
 
-  String _getFormatDescription(ExportFormat format) {
+  String _getFormatExtension(ExportFormat format) {
     switch (format) {
-      case ExportFormat.csv:
-        return 'Spreadsheet compatible format';
-      case ExportFormat.geojson:
-        return 'GIS and web mapping compatible';
-      case ExportFormat.kml:
-        return 'Google Earth and GPS compatible';
-      case ExportFormat.sqlite:
-        return 'Complete database backup';
-      case ExportFormat.shapefile:
-        return 'GIS shapefile format (WKT)';
+      case ExportFormat.csv: return 'csv';
+      case ExportFormat.geojson: return 'geojson';
+      case ExportFormat.kml: return 'kml';
+      case ExportFormat.sqlite: return 'db';
+      case ExportFormat.shapefile: return 'wkt';
     }
   }
 
-  Future<void> _performExport(ExportFormat format) async {
-    Navigator.pop(context);
-    
-    try {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('Exporting survey data...'),
-              SizedBox(height: 8),
-              Text(
-                'Format: ${_getFormatDisplayName(format)}',
-                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-              ),
-            ],
+  // SETTINGS
+  void _showSettings() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('Survey Settings'),
+          content: SingleChildScrollView(
+            child: StatefulBuilder(
+              builder: (context, setDialogState) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ListTile(
+                      title: Text('Base Map Layer'),
+                      subtitle: Text(_getBaseLayerName(_currentBaseLayer)),
+                      trailing: DropdownButton<MapBaseLayer>(
+                        value: _currentBaseLayer,
+                        items: [
+                          DropdownMenuItem(value: MapBaseLayer.openStreetMap, child: Text('OpenStreetMap')),
+                          DropdownMenuItem(value: MapBaseLayer.satellite, child: Text('Satellite')),
+                          DropdownMenuItem(value: MapBaseLayer.emag2Magnetic, child: Text('EMAG2 Magnetic')),
+                        ],
+                        onChanged: (MapBaseLayer? value) {
+                          if (value != null) {
+                            setDialogState(() => _currentBaseLayer = value);
+                            setState(() => _currentBaseLayer = value);
+                          }
+                        },
+                      ),
+                    ),
+                    
+                    Divider(),
+                    
+                    ListTile(
+                      title: Text('Magnetic Pull Rate'),
+                      subtitle: Text('How often to collect data automatically'),
+                      trailing: DropdownButton<Duration>(
+                        value: _magneticPullRate,
+                        items: [
+                          DropdownMenuItem(value: Duration(milliseconds: 500), child: Text('0.5s')),
+                          DropdownMenuItem(value: Duration(seconds: 1), child: Text('1s')),
+                          DropdownMenuItem(value: Duration(seconds: 2), child: Text('2s')),
+                          DropdownMenuItem(value: Duration(seconds: 5), child: Text('5s')),
+                        ],
+                        onChanged: (Duration? value) {
+                          if (value != null) {
+                            setDialogState(() => _magneticPullRate = value);
+                            setState(() => _magneticPullRate = value);
+                          }
+                        },
+                      ),
+                    ),
+                    
+                    Divider(),
+                    
+                    SwitchListTile(
+                      title: Text('Show Grid'),
+                      subtitle: Text('Display survey grid overlay'),
+                      value: _showGrid,
+                      onChanged: (value) {
+                        setDialogState(() => _showGrid = value);
+                        setState(() => _showGrid = value);
+                      },
+                    ),
+                    
+                    SwitchListTile(
+                      title: Text('Auto Navigate'),
+                      subtitle: Text('Auto-center map on location'),
+                      value: _autoNavigate,
+                      onChanged: (value) {
+                        setDialogState(() => _autoNavigate = value);
+                        setState(() => _autoNavigate = value);
+                      },
+                    ),
+                    
+                    SwitchListTile(
+                      title: Text('Follow Location'),
+                      subtitle: Text('Keep map centered on GPS'),
+                      value: _followLocation,
+                      onChanged: (value) {
+                        setDialogState(() => _followLocation = value);
+                        setState(() => _followLocation = value);
+                      },
+                    ),
+                    
+                    SwitchListTile(
+                      title: Text('Show Compass'),
+                      subtitle: Text('Display compass overlay'),
+                      value: _showCompass,
+                      onChanged: (value) {
+                        setDialogState(() => _showCompass = value);
+                        setState(() => _showCompass = value);
+                      },
+                    ),
+                    
+                    SwitchListTile(
+                      title: Text('Team Mode'),
+                      subtitle: Text('Enable team collaboration'),
+                      value: _isTeamMode,
+                      onChanged: (value) {
+                        setDialogState(() => _isTeamMode = value);
+                        setState(() => _isTeamMode = value);
+                      },
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
-        ),
-      );
-
-      final project = widget.project ?? SurveyProject(
-        name: 'Survey Export',
-        description: 'Magnetic survey data export',
-        createdAt: DateTime.now(),
-      );
-
-      List<MagneticReading> allReadings = List.from(_savedReadings);
-      
-      for (int i = 0; i < _collectedPoints.length; i++) {
-        final point = _collectedPoints[i];
-        bool exists = _savedReadings.any((reading) => 
-          (reading.latitude - point.latitude).abs() < 0.000001 &&
-          (reading.longitude - point.longitude).abs() < 0.000001
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('Close'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _calibrateMagnetic();
+              },
+              child: Text('Calibrate Sensors'),
+            ),
+          ],
         );
-        
-        if (!exists) {
-          allReadings.add(MagneticReading(
-            latitude: point.latitude,
-            longitude: point.longitude,
-            altitude: _currentPosition?.altitude ?? 0.0,
-            magneticX: _magneticX,
-            magneticY: _magneticY,
-            magneticZ: _magneticZ,
-            totalField: _totalField,
-            timestamp: DateTime.now().subtract(Duration(minutes: i)),
-            projectId: project.id ?? 1,
-            accuracy: _gpsAccuracy,
-            heading: _heading,
-          ));
+      },
+    );
+  }
+
+  String _getBaseLayerName(MapBaseLayer layer) {
+    switch (layer) {
+      case MapBaseLayer.openStreetMap:
+        return 'OpenStreetMap';
+      case MapBaseLayer.satellite:
+        return 'Satellite View';
+      case MapBaseLayer.emag2Magnetic:
+        return 'EMAG2 Global Magnetic';
+    }
+  }
+
+  void _findNextTargetCell() {
+    if (_gridCells.isEmpty) return;
+
+    GridCell? nextCell;
+    
+    for (var cell in _gridCells) {
+      if (cell.status == GridCellStatus.notStarted) {
+        nextCell = cell;
+        break;
+      }
+    }
+
+    if (nextCell == null) {
+      for (var cell in _gridCells) {
+        if (cell.status == GridCellStatus.inProgress) {
+          nextCell = cell;
+          break;
         }
       }
+    }
 
-      String exportData = await ExportService.instance.exportProject(
-        project: project,
-        readings: allReadings,
-        gridCells: _gridCells,
-        fieldNotes: [],
-        format: format,
-      );
+    setState(() {
+      _nextTargetCell = nextCell;
+    });
 
-      Navigator.pop(context);
-
-      String extension = ExportService.instance.getFileExtension(format);
-      String sanitizedProjectName = project.name
-          .replaceAll(' ', '_')
-          .replaceAll(RegExp(r'[^\w\-_]'), '');
-      String filename = '${sanitizedProjectName}_${DateTime.now().millisecondsSinceEpoch}$extension';
-      
-      await ExportService.instance.saveAndShare(
-        data: exportData,
-        filename: filename,
-        mimeType: ExportService.instance.getMimeType(format),
-      );
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Survey data exported as ${_getFormatDisplayName(format)}!'),
-          backgroundColor: Colors.green,
-          action: SnackBarAction(
-            label: 'Share',
-            textColor: Colors.white,
-            onPressed: () {},
-          ),
-        ),
-      );
-    } catch (e) {
-      if (Navigator.canPop(context)) {
-        Navigator.pop(context);
+    if (nextCell != null && _autoNavigate && _isMapReady) {
+      try {
+        _mapController.move(
+          LatLng(nextCell.centerLat, nextCell.centerLon),
+          _mapController.camera.zoom
+        );
+      } catch (e) {
+        print('Error navigating to next cell: $e');
       }
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Export failed: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
     }
   }
+
 }

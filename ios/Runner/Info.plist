@@ -45,5 +45,14 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+
+
+		<!-- CRITICAL: Location Permissions for GPS -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>This app needs location access to record GPS coordinates for magnetic survey data collection.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>This app needs location access to record GPS coordinates for magnetic survey data collection.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>This app needs location access to record GPS coordinates for magnetic survey data collection.</string>
 </dict>
 </plist>
