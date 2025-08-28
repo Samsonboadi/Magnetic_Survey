@@ -423,6 +423,9 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
       return;
     }
 
+    // Get current magnetic field value for this specific point
+    final currentMagneticValue = _totalField;
+    
     final reading = MagneticReading(
       projectId: widget.project?.id ?? 1,
       latitude: _currentPosition!.latitude,
@@ -431,7 +434,7 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
       magneticX: _magneticX,
       magneticY: _magneticY,
       magneticZ: _magneticZ,
-      totalField: _totalField,
+      totalField: currentMagneticValue, // Store the specific magnetic value for this point
       timestamp: DateTime.now(),
       accuracy: _currentPosition!.accuracy,
       heading: _heading,
@@ -439,14 +442,18 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     );
 
     if (!_isWebMode && widget.project != null) {
-      DatabaseService.instance.insertMagneticReading(reading);
+      try {
+        DatabaseService.instance.insertMagneticReading(reading);
+      } catch (e) {
+        print('Error saving to database: $e');
+      }
     }
 
     _savedReadings.add(reading);
     _collectedPoints.add(LatLng(reading.latitude, reading.longitude));
     
     setState(() {
-      _pointCount = _savedReadings.length;
+      _pointCount = _savedReadings.length; // Use actual saved readings count
     });
 
     _updateCoverageStats();
@@ -456,7 +463,7 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     }
   }
 
-  // FIXED: Your complete method with banner fixes
+  // FIXED: Your complete method with grid-specific messages
   void _toggleAutomaticCollection() {
     setState(() {
       _isCollecting = !_isCollecting;
@@ -476,9 +483,14 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
         }
       });
 
+      // FIXED: Different messages for grid vs no-grid surveys
+      String message = _gridCells.isNotEmpty 
+          ? 'Automatic recording started - Each grid cell needs 2+ points'
+          : 'Automatic recording started';
+      
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Automatic recording started - Each grid cell needs 2+ points'),
+          content: Text(message),
           backgroundColor: Colors.blue,
           duration: Duration(seconds: 3),
         ),
@@ -530,13 +542,60 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Magnetic Calibration'),
+        title: Text('Sensor Calibration'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(Icons.settings_input_component, size: 64, color: Colors.blue),
             SizedBox(height: 16),
-            Text('Hold device away from metal objects and press calibrate.'),
+            Text('Calibrate sensors for accurate readings:'),
+            SizedBox(height: 16),
+            
+            // Magnetometer Calibration
+            Container(
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.sensors, color: Colors.blue),
+                      SizedBox(width: 8),
+                      Text('Magnetometer Calibration', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  Text('Hold device away from metal objects and press calibrate.', style: TextStyle(fontSize: 12)),
+                ],
+              ),
+            ),
+            
+            SizedBox(height: 12),
+            
+            // Compass Calibration Instructions
+            Container(
+              padding: EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.purple.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.explore, color: Colors.purple),
+                      SizedBox(width: 8),
+                      Text('Compass Calibration', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  Text('Move phone in figure-8 pattern for 10 seconds to calibrate compass direction.', style: TextStyle(fontSize: 12)),
+                ],
+              ),
+            ),
           ],
         ),
         actions: [
@@ -553,16 +612,43 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
                 _isMagneticCalibrated = true;
               });
               Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Magnetic sensor calibrated successfully!'),
-                  backgroundColor: Colors.green,
-                ),
-              );
+              _showCompassCalibrationInstructions();
             },
             child: Text('Calibrate'),
           ),
         ],
+      ),
+    );
+  }
+
+  void _showCompassCalibrationInstructions() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.explore, color: Colors.white),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text('Now move your phone in a figure-8 pattern for 10 seconds to calibrate compass direction.'),
+            ),
+          ],
+        ),
+        backgroundColor: Colors.purple,
+        duration: Duration(seconds: 10),
+        action: SnackBarAction(
+          label: 'Done',
+          textColor: Colors.white,
+          onPressed: () {
+            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Compass calibration complete! Navigation icon should now point correctly.'),
+                backgroundColor: Colors.green,
+                duration: Duration(seconds: 3),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -594,7 +680,12 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
             child: _buildMagneticScale(),
           ),
           
-          _buildCollapsibleTaskBar(),
+          // MOVED: Stats panel as floating button at bottom-left
+          Positioned(
+            bottom: 20,
+            left: 20,
+            child: _buildStatsFloatingButton(),
+          ),
           
           if (_showDataBanner)
             Positioned(
@@ -638,15 +729,33 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
             )).toList(),
           ),
 
-        if (_collectedPoints.isNotEmpty)
-          CircleLayer(
-            circles: _collectedPoints.map((point) => CircleMarker(
-              point: point,
-              radius: 4,
-              color: getMagneticFieldColor(_totalField),
-              borderColor: Colors.white,
-              borderStrokeWidth: 1,
-            )).toList(),
+        // FIXED: Individual colored points with click handlers
+        if (_savedReadings.isNotEmpty)
+          MarkerLayer(
+            markers: _savedReadings.map((reading) {
+              return Marker(
+                point: LatLng(reading.latitude, reading.longitude),
+                child: GestureDetector(
+                  onTap: () => _showPointInfo(reading),
+                  child: Container(
+                    width: 12,
+                    height: 12,
+                    decoration: BoxDecoration(
+                      color: getMagneticFieldColor(reading.totalField), // Individual color per point
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 1),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 2,
+                          offset: Offset(1, 1),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
           ),
 
         if (_currentPosition != null) ...[
@@ -661,13 +770,14 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
               ),
             ],
           ),
+          // FIXED: Current position with proper rotation
           if (_heading != null)
             MarkerLayer(
               markers: [
                 Marker(
                   point: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
                   child: Transform.rotate(
-                    angle: (_heading ?? 0) * math.pi / 180,
+                    angle: (_heading! - 90) * math.pi / 180, // FIXED: Subtract 90 degrees to align arrow tip with movement direction
                     child: Icon(
                       Icons.navigation,
                       color: Colors.blue,
@@ -838,9 +948,11 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
         Container(
           padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: (_isGpsCalibrated && _gpsAccuracy <= 10.0) 
-                ? Colors.green.withOpacity(0.9) 
-                : Colors.orange.withOpacity(0.9),
+            color: _gpsAccuracy <= 5.0 
+                ? Colors.green.withOpacity(0.9)
+                : _gpsAccuracy <= 10.0 
+                ? Colors.orange.withOpacity(0.9)
+                : Colors.red.withOpacity(0.9),
             borderRadius: BorderRadius.circular(20),
             boxShadow: [
               BoxShadow(
@@ -854,7 +966,7 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                (_isGpsCalibrated && _gpsAccuracy <= 10.0) ? Icons.gps_fixed : Icons.gps_not_fixed,
+                _gpsAccuracy <= 10.0 ? Icons.gps_fixed : Icons.gps_not_fixed,
                 size: 18,
                 color: Colors.white,
               ),
@@ -951,95 +1063,102 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     );
   }
 
-  Widget _buildCollapsibleTaskBar() {
-    return AnimatedBuilder(
-      animation: _taskBarAnimation,
-      builder: (context, child) {
-        return Positioned(
-          bottom: _taskBarAnimation.value * -120,
-          left: 0,
-          right: 0,
-          child: Container(
-            margin: EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.95),
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 8,
-                  offset: Offset(0, 4),
-                ),
+  Widget _buildStatsFloatingButton() {
+    return FloatingActionButton(
+      heroTag: "stats_panel",
+      onPressed: () => _showStatsDialog(),
+      backgroundColor: Colors.blue[700],
+      child: Icon(Icons.analytics, color: Colors.white),
+      tooltip: 'Survey Statistics',
+    );
+  }
+
+  void _showStatsDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.analytics, color: Colors.blue),
+            SizedBox(width: 8),
+            Text('Survey Statistics'),
+          ],
+        ),
+        content: Container(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildDetailedStatItem('Total Points', _pointCount.toString(), Icons.location_on, Colors.green),
+              SizedBox(height: 12),
+              _buildDetailedStatItem('Current Magnetic Field', '${_totalField.toStringAsFixed(2)} μT', Icons.sensors, Colors.purple),
+              SizedBox(height: 12),
+              _buildDetailedStatItem('GPS Accuracy', '±${_gpsAccuracy.toStringAsFixed(1)} m', Icons.gps_fixed, 
+                  _gpsAccuracy <= 5.0 ? Colors.green : _gpsAccuracy <= 10.0 ? Colors.orange : Colors.red),
+              if (_gridCells.isNotEmpty) ...[
+                SizedBox(height: 12),
+                _buildDetailedStatItem('Grid Coverage', '${_coveragePercentage.toStringAsFixed(1)}%', Icons.grid_on, Colors.blue),
+                SizedBox(height: 12),
+                _buildDetailedStatItem('Grid Cells', '${_completedCells}/${_gridCells.length}', Icons.grid_4x4, Colors.teal),
               ],
-            ),
+              if (_currentPosition != null) ...[
+                SizedBox(height: 12),
+                _buildDetailedStatItem('Altitude', '${_currentPosition!.altitude.toStringAsFixed(1)} m', Icons.height, Colors.brown),
+              ],
+              if (_heading != null) ...[
+                SizedBox(height: 12),
+                _buildDetailedStatItem('Heading', '${_heading!.toStringAsFixed(0)}°', Icons.explore, Colors.deepPurple),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDetailedStatItem(String label, String value, IconData icon, Color color) {
+    return Container(
+      padding: EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 24),
+          SizedBox(width: 12),
+          Expanded(
             child: Column(
-              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _isTaskBarCollapsed = !_isTaskBarCollapsed;
-                    });
-                    if (_isTaskBarCollapsed) {
-                      _taskBarAnimationController.forward();
-                    } else {
-                      _taskBarAnimationController.reverse();
-                    }
-                  },
-                  child: Container(
-                    padding: EdgeInsets.all(12),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          'Survey Stats',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.blue[800],
-                          ),
-                        ),
-                        SizedBox(width: 8),
-                        Icon(
-                          _isTaskBarCollapsed 
-                              ? Icons.keyboard_arrow_up 
-                              : Icons.keyboard_arrow_down,
-                          color: Colors.blue[800],
-                          size: 18,
-                        ),
-                      ],
-                    ),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
-                
-                if (!_isTaskBarCollapsed)
-                  Container(
-                    padding: EdgeInsets.all(16),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          children: [
-                            _buildStatItem('Points', _pointCount.toString(), Icons.location_on),
-                            _buildStatItem('Coverage', '${_coveragePercentage.toStringAsFixed(1)}%', Icons.grid_on),
-                          ],
-                        ),
-                        SizedBox(height: 12),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          children: [
-                            _buildStatItem('Field', '${_totalField.toStringAsFixed(1)}μT', Icons.sensors),
-                            _buildStatItem('Accuracy', '±${_gpsAccuracy.toStringAsFixed(1)}m', Icons.gps_fixed),
-                          ],
-                        ),
-                      ],
-                    ),
+                Text(
+                  value,
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: color,
                   ),
+                ),
               ],
             ),
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 
@@ -1074,6 +1193,7 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
   }
 
   Widget _buildDataBanner() {
+    // FIXED: Show accurate count of actually saved readings
     int actualPointCount = _savedReadings.length;
     
     return Container(
@@ -1095,7 +1215,7 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
           SizedBox(width: 8),
           Expanded(
             child: Text(
-              'Point recorded! Total: $actualPointCount readings',
+              'Point recorded! Total: $actualPointCount readings (Mag: ${_totalField.toStringAsFixed(1)}μT)',
               style: TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
@@ -1128,131 +1248,6 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     }
     
     return LatLng(0.0, 0.0);
-  }
-
-  // POINT INFO POPUPS
-  void _showPointInfo(LatLng point, int index) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Survey Point ${index + 1}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('📍 Location', style: TextStyle(fontWeight: FontWeight.bold)),
-            Text('Lat: ${point.latitude.toStringAsFixed(6)}°'),
-            Text('Lon: ${point.longitude.toStringAsFixed(6)}°'),
-            SizedBox(height: 12),
-            Text('🧲 Magnetic Data', style: TextStyle(fontWeight: FontWeight.bold)),
-            Text('Total Field: ${_totalField.toStringAsFixed(1)} μT'),
-            Text('X: ${_magneticX.toStringAsFixed(1)} μT'),
-            Text('Y: ${_magneticY.toStringAsFixed(1)} μT'),
-            Text('Z: ${_magneticZ.toStringAsFixed(1)} μT'),
-            SizedBox(height: 12),
-            Text('⏰ Collection Time', style: TextStyle(fontWeight: FontWeight.bold)),
-            Text('${DateTime.now().toString().split('.')[0]}'),
-            SizedBox(height: 12),
-            Text('🎯 GPS Info', style: TextStyle(fontWeight: FontWeight.bold)),
-            Text('Accuracy: ±${_gpsAccuracy.toStringAsFixed(1)}m'),
-            if (_heading != null)
-              Text('Heading: ${_heading!.toStringAsFixed(1)}°'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showReadingInfo(MagneticReading reading, int index) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Reading ${index + 1}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('📍 Location', style: TextStyle(fontWeight: FontWeight.bold)),
-            Text('Lat: ${reading.latitude.toStringAsFixed(6)}°'),
-            Text('Lon: ${reading.longitude.toStringAsFixed(6)}°'),
-            Text('Alt: ${reading.altitude.toStringAsFixed(1)}m'),
-            SizedBox(height: 12),
-            Text('🧲 Magnetic Data', style: TextStyle(fontWeight: FontWeight.bold)),
-            Text('Total Field: ${reading.totalField.toStringAsFixed(1)} μT'),
-            Text('X: ${reading.magneticX.toStringAsFixed(1)} μT'),
-            Text('Y: ${reading.magneticY.toStringAsFixed(1)} μT'),
-            Text('Z: ${reading.magneticZ.toStringAsFixed(1)} μT'),
-            SizedBox(height: 12),
-            Text('⏰ Recorded', style: TextStyle(fontWeight: FontWeight.bold)),
-            Text('${reading.timestamp.toString().split('.')[0]}'),
-            SizedBox(height: 12),
-            Text('🎯 GPS Quality', style: TextStyle(fontWeight: FontWeight.bold)),
-            Text('Accuracy: ±${reading.accuracy.toStringAsFixed(1)}m'),
-            if (reading.heading != null)
-              Text('Heading: ${reading.heading!.toStringAsFixed(1)}°'),
-            if (reading.notes != null && reading.notes!.isNotEmpty) ...[
-              SizedBox(height: 12),
-              Text('📝 Notes', style: TextStyle(fontWeight: FontWeight.bold)),
-              Text('${reading.notes}'),
-            ],
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Close'),
-          ),
-          if (!_isWebMode)
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _deleteReading(reading, index);
-              },
-              child: Text('Delete', style: TextStyle(color: Colors.red)),
-            ),
-        ],
-      ),
-    );
-  }
-
-  void _deleteReading(MagneticReading reading, int index) async {
-    try {
-      if (!_isWebMode && reading.projectId != null) {
-        // Remove from database if it exists
-        // Note: You'll need to implement deleteReading in DatabaseService
-      }
-      
-      setState(() {
-        _savedReadings.removeAt(index);
-        _collectedPoints.removeWhere((point) => 
-          (point.latitude - reading.latitude).abs() < 0.000001 &&
-          (point.longitude - reading.longitude).abs() < 0.000001
-        );
-        _pointCount = _savedReadings.length;
-      });
-      
-      _updateCoverageStats();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Reading deleted'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error deleting reading: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
   }
 
   Color getMagneticFieldColor(double totalField) {
@@ -1298,9 +1293,9 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
   Future<void> _loadPreviousSurveyData() async {
     if (_isWebMode) return; // Skip database operations in web mode
     
-    // Only try to load if we have a valid project with an ID
+    // Only load if we have a valid project with an ID
     if (widget.project?.id == null) {
-      print('No valid project ID - skipping database load');
+      print('No project ID available, skipping previous data load');
       return;
     }
     
@@ -1313,11 +1308,93 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
           _pointCount = readings.length;
         });
         _updateCoverageStats();
+        print('Loaded ${readings.length} previous readings');
       }
     } catch (e) {
       print('Error loading previous survey data: $e');
-      // Don't crash - just continue without previous data
+      // Continue without previous data - this is not a critical error
     }
+  }
+
+  void _showPointInfo(MagneticReading reading) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Container(
+              width: 20,
+              height: 20,
+              decoration: BoxDecoration(
+                color: getMagneticFieldColor(reading.totalField),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.grey, width: 1),
+              ),
+            ),
+            SizedBox(width: 12),
+            Text('Survey Point'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildInfoRow('Magnetic Intensity:', '${reading.totalField.toStringAsFixed(2)} μT'),
+            SizedBox(height: 8),
+            _buildInfoRow('Date & Time:', _formatDateTime(reading.timestamp)),
+            SizedBox(height: 8),
+            _buildInfoRow('Location:', '${reading.latitude.toStringAsFixed(6)}, ${reading.longitude.toStringAsFixed(6)}'),
+            SizedBox(height: 8),
+            _buildInfoRow('GPS Accuracy:', '±${reading.accuracy.toStringAsFixed(1)} m'),
+            SizedBox(height: 8),
+            _buildInfoRow('Altitude:', '${reading.altitude.toStringAsFixed(1)} m'),
+            if (reading.heading != null) ...[
+              SizedBox(height: 8),
+              _buildInfoRow('Heading:', '${reading.heading!.toStringAsFixed(0)}°'),
+            ],
+            if (reading.notes != null && reading.notes!.isNotEmpty) ...[
+              SizedBox(height: 8),
+              _buildInfoRow('Notes:', reading.notes!),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 100,
+          child: Text(
+            label,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+              color: Colors.grey[700],
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: TextStyle(fontSize: 12),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _formatDateTime(DateTime dateTime) {
+    return '${dateTime.day}/${dateTime.month}/${dateTime.year} ${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
   }
 
   void _onMapTap(TapPosition tapPosition, LatLng point) {
