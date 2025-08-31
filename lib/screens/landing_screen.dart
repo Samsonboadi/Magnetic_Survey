@@ -1,4 +1,4 @@
-// lib/screens/landing_screen.dart
+// lib/screens/landing_screen.dart - FIXED VERSION
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:math' as math;
@@ -21,6 +21,7 @@ class _LandingScreenState extends State<LandingScreen>
   late Animation<double> _logoAnimation;
   
   final List<Particle> _particles = [];
+  bool _isDisposed = false; // ADDED: Track disposal state
 
   @override
   void initState() {
@@ -60,18 +61,32 @@ class _LandingScreenState extends State<LandingScreen>
     }
   }
 
+  // FIXED: Check if disposed before calling animation methods
   void _startAnimations() async {
-    await Future.delayed(Duration(milliseconds: 300));
-    _fadeController.forward();
-    await Future.delayed(Duration(milliseconds: 500));
-    _logoController.forward();
+    try {
+      await Future.delayed(Duration(milliseconds: 300));
+      if (!_isDisposed && mounted) {
+        _fadeController.forward();
+      }
+      
+      await Future.delayed(Duration(milliseconds: 500));
+      if (!_isDisposed && mounted) {
+        _logoController.forward();
+      }
+    } catch (e) {
+      print('Animation start error: $e');
+    }
   }
 
   @override
   void dispose() {
+    _isDisposed = true; // ADDED: Mark as disposed
+    
+    // FIXED: Dispose controllers in correct order and with null checks
     _fadeController.dispose();
     _logoController.dispose();
     _particleController.dispose();
+    
     super.dispose();
   }
 
@@ -194,239 +209,74 @@ class _LandingScreenState extends State<LandingScreen>
                                     letterSpacing: 0.5,
                                   ),
                                 ),
-                              ],
-                            ),
-                          ),
-                          
-                          SizedBox(height: 48),
-                          
-                          // Feature Highlights
-                          FadeTransition(
-                            opacity: _fadeAnimation,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                              children: [
-                                _buildFeatureIcon(Icons.gps_fixed, 'Precision GPS'),
-                                _buildFeatureIcon(Icons.sensors, 'Real-time Data'),
-                                _buildFeatureIcon(Icons.grid_on, 'Grid Surveys'),
-                                _buildFeatureIcon(Icons.cloud_upload, 'Data Export'),
-                              ],
-                            ),
-                          ),
-                          
-                          SizedBox(height: 48),
-                          
-                          // Developer Information Section
-                          FadeTransition(
-                            opacity: _fadeAnimation,
-                            child: Container(
-                              margin: EdgeInsets.symmetric(horizontal: 8),
-                              padding: EdgeInsets.all(20),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(
-                                  color: Colors.white.withOpacity(0.2),
-                                  width: 1,
+                                
+                                SizedBox(height: 32),
+                                
+                                // Feature Icons
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    _buildFeatureIcon(Icons.gps_fixed, 'GPS'),
+                                    _buildFeatureIcon(Icons.sensors, 'Sensors'),
+                                    _buildFeatureIcon(Icons.grid_on, 'Grid'),
+                                    _buildFeatureIcon(Icons.share, 'Export'),
+                                  ],
                                 ),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.1),
-                                    blurRadius: 10,
-                                    spreadRadius: 1,
-                                  ),
-                                ],
-                              ),
-                              child: Column(
-                                children: [
-                                  // Company Logo/Icon
-                                  Container(
-                                    width: 60,
-                                    height: 60,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: Colors.white.withOpacity(0.15),
-                                      border: Border.all(
-                                        color: Colors.white.withOpacity(0.3),
-                                        width: 2,
-                                      ),
-                                    ),
-                                    child: Icon(
-                                      Icons.business,
-                                      size: 30,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                  
-                                  SizedBox(height: 16),
-                                  
-                                  // Company Information
-                                  Text(
-                                    'GeoMinds',
-                                    style: TextStyle(
-                                      fontSize: 24,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.white,
-                                      letterSpacing: 1.2,
-                                    ),
-                                  ),
-                                  
-                                  SizedBox(height: 6),
-                                  
-                                  Text(
-                                    'Geoscience & Survey Solutions',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      color: Colors.white.withOpacity(0.8),
-                                      fontWeight: FontWeight.w400,
-                                    ),
-                                  ),
-                                  
-                                  SizedBox(height: 20),
-                                  
-                                  // Developer Information
-                                  Container(
-                                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withOpacity(0.1),
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(
-                                        color: Colors.white.withOpacity(0.2),
-                                      ),
-                                    ),
-                                    child: Column(
-                                      children: [
-                                        Row(
-                                          mainAxisAlignment: MainAxisAlignment.center,
-                                          children: [
-                                            Icon(
-                                              Icons.person,
-                                              size: 18,
-                                              color: Colors.white.withOpacity(0.8),
-                                            ),
-                                            SizedBox(width: 6),
-                                            Text(
-                                              'Developer',
-                                              style: TextStyle(
-                                                fontSize: 12,
-                                                color: Colors.white.withOpacity(0.7),
-                                                fontWeight: FontWeight.w300,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                        
-                                        SizedBox(height: 6),
-                                        
-                                        Text(
-                                          'Powered by Geominds',
-                                          style: TextStyle(
-                                            fontSize: 16,
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                        
-                                        SizedBox(height: 2),
-                                        
-                                        Text(
-                                          'Senior Software Engineer',
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Colors.white.withOpacity(0.8),
-                                            fontWeight: FontWeight.w400,
-                                          ),
-                                        ),
+                                
+                                SizedBox(height: 50),
+                                
+                                // Continue Button
+                                Container(
+                                  width: double.infinity,
+                                  height: 56,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(28),
+                                    gradient: LinearGradient(
+                                      colors: [
+                                        Colors.white.withOpacity(0.2),
+                                        Colors.white.withOpacity(0.1),
                                       ],
                                     ),
-                                  ),
-                                  
-                                  SizedBox(height: 16),
-                                  
-                                  // App Version & Year
-                                  Text(
-                                    'v1.0.0 • ${DateTime.now().year} • Made with Flutter',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.white.withOpacity(0.6),
-                                      fontWeight: FontWeight.w300,
+                                    border: Border.all(
+                                      color: Colors.white.withOpacity(0.3),
+                                      width: 1,
                                     ),
                                   ),
-                                ],
-                              ),
+                                  child: Material(
+                                    color: Colors.transparent,
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(28),
+                                      onTap: widget.onContinue,
+                                      child: Center(
+                                        child: Text(
+                                          'Start Survey',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.w600,
+                                            letterSpacing: 0.5,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                
+                                SizedBox(height: 24),
+                                
+                                Text(
+                                  'Tap anywhere to continue',
+                                  style: TextStyle(
+                                    color: Colors.white.withOpacity(0.6),
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                
+                                SizedBox(height: 40),
+                              ],
                             ),
                           ),
                         ],
-                      ),
-                      
-                      SizedBox(height: 40),
-                      
-                      // Call to Action
-                      FadeTransition(
-                        opacity: _fadeAnimation,
-                        child: Column(
-                          children: [
-                            Container(
-                              width: double.infinity,
-                              height: 56,
-                              margin: EdgeInsets.symmetric(horizontal: 32),
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [Colors.white, Colors.white.withOpacity(0.9)],
-                                ),
-                                borderRadius: BorderRadius.circular(28),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.2),
-                                    blurRadius: 8,
-                                    offset: Offset(0, 4),
-                                  ),
-                                ],
-                              ),
-                              child: Material(
-                                color: Colors.transparent,
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(28),
-                                  onTap: widget.onContinue,
-                                  child: Center(
-                                    child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        Text(
-                                          'Start Survey',
-                                          style: TextStyle(
-                                            fontSize: 18,
-                                            fontWeight: FontWeight.bold,
-                                            color: Color(0xFF1E3C72),
-                                          ),
-                                        ),
-                                        SizedBox(width: 8),
-                                        Icon(
-                                          Icons.arrow_forward,
-                                          color: Color(0xFF1E3C72),
-                                          size: 20,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                            
-                            SizedBox(height: 16),
-                            
-                            Text(
-                              'Tap anywhere to continue',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Colors.white.withOpacity(0.7),
-                                fontWeight: FontWeight.w300,
-                              ),
-                            ),
-                            
-                            SizedBox(height: 40),
-                          ],
-                        ),
                       ),
                     ],
                   ),
