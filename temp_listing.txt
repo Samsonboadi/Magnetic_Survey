@@ -1,0 +1,1112 @@
+   1 import 'dart:math' as math;
+   2 
+   3 import 'package:flutter/material.dart';
+   4 import 'package:flutter_map/flutter_map.dart';
+   5 import 'package:latlong2/latlong.dart';
+   6 
+   7 import '../models/magnetic_reading.dart';
+   8 import '../models/survey_project.dart';
+   9 
+  10 class DataAnalysisScreen extends StatefulWidget {
+  11   const DataAnalysisScreen({
+  12     super.key,
+  13     required this.readings,
+  14     this.project,
+  15   });
+  16 
+  17   final List<MagneticReading> readings;
+  18   final SurveyProject? project;
+  19 
+  20   @override
+  21   State<DataAnalysisScreen> createState() => _DataAnalysisScreenState();
+  22 }
+  23 
+  24 class _DataAnalysisScreenState extends State<DataAnalysisScreen>
+  25     with TickerProviderStateMixin {
+  26   late TabController _tabController;
+  27   final MapController _mapController = MapController();
+  28 
+  29   bool _isLoading = true;
+  30   bool _hasError = false;
+  31   String _errorMessage = '';
+  32 
+  33   late List<MagneticReading> _points;
+  34   Map<String, dynamic> _statistics = {};
+  35   List<Map<String, dynamic>> _anomalies = [];
+  36 
+  37   // Filtering options
+  38   DateTimeRange? _dateFilter;
+  39   double _minMagnitude = 0;
+  40   double _maxMagnitude = 100000;
+  41   bool _showFilters = false;
+  42 
+  43   @override
+  44   void initState() {
+  45     super.initState();
+  46     _tabController = TabController(length: 4, vsync: this);
+  47     _loadData();
+  48   }
+  49 
+  50   @override
+  51   void dispose() {
+  52     _tabController.dispose();
+  53     super.dispose();
+  54   }
+  55 
+  56   Future<void> _loadData() async {
+  57     setState(() {
+  58       _isLoading = true;
+  59       _hasError = false;
+  60     });
+  61 
+  62     try {
+  63       _points = List.of(widget.readings)..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+  64 
+  65       if (_points.isNotEmpty) {
+  66         _calculateStatistics();
+  67         _detectAnomalies();
+  68       }
+  69 
+  70       setState(() {
+  71         _isLoading = false;
+  72       });
+  73     } catch (e) {
+  74       setState(() {
+  75         _isLoading = false;
+  76         _hasError = true;
+  77         _errorMessage = e.toString();
+  78       });
+  79     }
+  80   }
+  81 
+  82   void _calculateStatistics() {
+  83     if (_points.isEmpty) return;
+  84 
+  85     final magnitudes = _points.map((p) => p.totalField).toList()..sort();
+  86     final altitudes = _points.map((p) => p.altitude ?? 0.0).toList();
+  87     final accuracies = _points.map((p) => p.accuracy ?? 0.0).where((v) => v > 0).toList();
+  88 
+  89     final mean = magnitudes.reduce((a, b) => a + b) / magnitudes.length;
+  90     final variance = magnitudes
+  91             .map((x) => math.pow(x - mean, 2))
+  92             .reduce((a, b) => a + b) /
+  93         magnitudes.length;
+  94     final standardDeviation = math.sqrt(variance);
+  95 
+  96     _statistics = {
+  97       'total_measurements': _points.length,
+  98       'magnitude_min': magnitudes.first,
+  99       'magnitude_max': magnitudes.last,
+ 100       'magnitude_mean': mean,
+ 101       'magnitude_std': standardDeviation,
+ 102       'magnitude_median': magnitudes.length % 2 == 0
+ 103           ? (magnitudes[magnitudes.length ~/ 2 - 1] +
+ 104                   magnitudes[magnitudes.length ~/ 2]) /
+ 105               2
+ 106           : magnitudes[magnitudes.length ~/ 2],
+ 107       'altitude_mean': altitudes.isNotEmpty
+ 108           ? altitudes.reduce((a, b) => a + b) / altitudes.length
+ 109           : 0.0,
+ 110       'gps_accuracy_mean': accuracies.isNotEmpty
+ 111           ? accuracies.reduce((a, b) => a + b) / accuracies.length
+ 112           : null,
+ 113       'duration_hours': _points.isNotEmpty
+ 114           ? _points.last.timestamp
+ 115               .difference(_points.first.timestamp)
+ 116               .inHours
+ 117           : 0,
+ 118       'survey_area_km2': _calculateSurveyArea(),
+ 119     };
+ 120   }
+ 121 
+ 122   double _calculateSurveyArea() {
+ 123     if (_points.length < 3) return 0.0;
+ 124 
+ 125     final lats = _points.map((p) => p.latitude).toList()..sort();
+ 126     final lngs = _points.map((p) => p.longitude).toList()..sort();
+ 127 
+ 128     final latRange = lats.last - lats.first;
+ 129     final lngRange = lngs.last - lngs.first;
+ 130 
+ 131     final latKm = latRange * 111.32;
+ 132     final midLat = lats[lats.length ~/ 2];
+ 133     final lngKm = lngRange * 111.32 * math.cos(midLat * math.pi / 180);
+ 134 
+ 135     return (latKm * lngKm).abs();
+ 136   }
+ 137 
+ 138   void _detectAnomalies() {
+ 139     if (_points.length < 10) return;
+ 140 
+ 141     _anomalies.clear();
+ 142     final mean = _statistics['magnitude_mean'] as double;
+ 143     final std = _statistics['magnitude_std'] as double;
+ 144     final threshold = std * 2; // 2 standard deviations
+ 145 
+ 146     for (int i = 0; i < _points.length; i++) {
+ 147       final p = _points[i];
+ 148       final deviation = (p.totalField - mean).abs();
+ 149       if (deviation > threshold) {
+ 150         _anomalies.add({
+ 151           'index': i,
+ 152           'point': p,
+ 153           'deviation': deviation,
+ 154           'severity': deviation > std * 3 ? 'High' : 'Medium',
+ 155         });
+ 156       }
+ 157     }
+ 158 
+ 159     _anomalies.sort(
+ 160         (a, b) => (b['deviation'] as double).compareTo(a['deviation'] as double));
+ 161     if (_anomalies.length > 20) {
+ 162       _anomalies = _anomalies.take(20).toList();
+ 163     }
+ 164   }
+ 165 
+ 166   void _applyFilters() {
+ 167     // Future: apply filters to _points and recompute
+ 168     setState(() {});
+ 169   }
+ 170 
+ 171   void _exportData() {
+ 172     showModalBottomSheet(
+ 173       context: context,
+ 174       builder: (context) => _buildExportSheet(),
+ 175     );
+ 176   }
+ 177 
+ 178   Widget _buildExportSheet() {
+ 179     return Container(
+ 180       padding: const EdgeInsets.all(20),
+ 181       child: Column(
+ 182         mainAxisSize: MainAxisSize.min,
+ 183         children: [
+ 184           Text(
+ 185             'Export Analysis Data',
+ 186             style: Theme.of(context)
+ 187                 .textTheme
+ 188                 .titleLarge
+ 189                 ?.copyWith(fontWeight: FontWeight.bold),
+ 190           ),
+ 191           const SizedBox(height: 20),
+ 192           ListTile(
+ 193             leading: const Icon(Icons.table_chart),
+ 194             title: const Text('Export as CSV'),
+ 195             subtitle: const Text('Raw measurement data'),
+ 196             onTap: () {
+ 197               Navigator.pop(context);
+ 198               _showExportMessage('CSV');
+ 199             },
+ 200           ),
+ 201           ListTile(
+ 202             leading: const Icon(Icons.insert_chart),
+ 203             title: const Text('Export Statistics'),
+ 204             subtitle: const Text('Analysis summary and statistics'),
+ 205             onTap: () {
+ 206               Navigator.pop(context);
+ 207               _showExportMessage('Statistics');
+ 208             },
+ 209           ),
+ 210           ListTile(
+ 211             leading: const Icon(Icons.warning),
+ 212             title: const Text('Export Anomalies'),
+ 213             subtitle: const Text('Detected anomalous readings'),
+ 214             onTap: () {
+ 215               Navigator.pop(context);
+ 216               _showExportMessage('Anomalies');
+ 217             },
+ 218           ),
+ 219           const SizedBox(height: 10),
+ 220         ],
+ 221       ),
+ 222     );
+ 223   }
+ 224 
+ 225   void _showExportMessage(String type) {
+ 226     ScaffoldMessenger.of(context).showSnackBar(
+ 227       SnackBar(
+ 228         content: Text('$type export functionality coming soon!'),
+ 229         backgroundColor: Colors.orange,
+ 230       ),
+ 231     );
+ 232   }
+ 233 
+ 234   @override
+ 235   Widget build(BuildContext context) {
+ 236     final theme = Theme.of(context);
+ 237 
+ 238     return Scaffold(
+ 239       appBar: AppBar(
+ 240         title: Text(widget.project?.name ?? 'Data Analysis'),
+ 241         backgroundColor: theme.colorScheme.primary,
+ 242         foregroundColor: Colors.white,
+ 243         actions: [
+ 244           IconButton(
+ 245             icon: const Icon(Icons.filter_list),
+ 246             onPressed: () => setState(() => _showFilters = !_showFilters),
+ 247           ),
+ 248           IconButton(
+ 249             icon: const Icon(Icons.download),
+ 250             onPressed: _exportData,
+ 251           ),
+ 252         ],
+ 253         bottom: TabBar(
+ 254           controller: _tabController,
+ 255           labelColor: Colors.white,
+ 256           unselectedLabelColor: Colors.white70,
+ 257           indicatorColor: Colors.white,
+ 258           tabs: const [
+ 259             Tab(icon: Icon(Icons.analytics), text: 'Overview'),
+ 260             Tab(icon: Icon(Icons.show_chart), text: 'Trends'),
+ 261             Tab(icon: Icon(Icons.warning), text: 'Anomalies'),
+ 262             Tab(icon: Icon(Icons.map), text: 'Spatial'),
+ 263           ],
+ 264         ),
+ 265       ),
+ 266       body: Column(
+ 267         children: [
+ 268           if (_showFilters) _buildFilterPanel(),
+ 269           Expanded(
+ 270             child: Builder(builder: (context) {
+ 271               if (_isLoading) {
+ 272                 return const _ModernLoadingIndicator(
+ 273                     message: 'Analyzing survey data...');
+ 274               }
+ 275               if (_hasError) {
+ 276                 return _ModernErrorState(
+ 277                   message: _errorMessage,
+ 278                   onRetry: _loadData,
+ 279                 );
+ 280               }
+ 281               if (_points.isEmpty) {
+ 282                 return _ModernEmptyState(
+ 283                   message:
+ 284                       'No survey data available for analysis.\nStart collecting measurements to see analysis.',
+ 285                   icon: Icons.analytics,
+ 286                   actionText: 'Back',
+ 287                   onAction: () => Navigator.pop(context),
+ 288                 );
+ 289               }
+ 290               return TabBarView(
+ 291                 controller: _tabController,
+ 292                 children: [
+ 293                   _buildOverviewTab(),
+ 294                   _buildTrendsTab(),
+ 295                   _buildAnomaliesTab(),
+ 296                   _buildSpatialTab(),
+ 297                 ],
+ 298               );
+ 299             }),
+ 300           ),
+ 301         ],
+ 302       ),
+ 303     );
+ 304   }
+ 305 
+ 306   Widget _buildFilterPanel() {
+ 307     final theme = Theme.of(context);
+ 308     DateTime firstTs =
+ 309         _points.isNotEmpty ? _points.first.timestamp : DateTime.now();
+ 310     DateTime lastTs = _points.isNotEmpty ? _points.last.timestamp : DateTime.now();
+ 311 
+ 312     return Container(
+ 313       padding: const EdgeInsets.all(16),
+ 314       decoration: BoxDecoration(
+ 315         color: theme.colorScheme.surface.withOpacity(0.05),
+ 316         border: Border(
+ 317           bottom: BorderSide(color: theme.dividerColor.withOpacity(0.3)),
+ 318         ),
+ 319       ),
+ 320       child: Column(
+ 321         crossAxisAlignment: CrossAxisAlignment.start,
+ 322         children: [
+ 323           Row(
+ 324             children: [
+ 325               Icon(Icons.filter_list, size: 20, color: theme.colorScheme.primary),
+ 326               const SizedBox(width: 8),
+ 327               Text('Data Filters',
+ 328                   style: theme.textTheme.titleMedium
+ 329                       ?.copyWith(fontWeight: FontWeight.bold)),
+ 330               const Spacer(),
+ 331               TextButton(
+ 332                 onPressed: () {
+ 333                   setState(() {
+ 334                     _dateFilter = null;
+ 335                     _minMagnitude = 0;
+ 336                     _maxMagnitude = 100000;
+ 337                   });
+ 338                   _applyFilters();
+ 339                 },
+ 340                 child: const Text('Reset'),
+ 341               ),
+ 342             ],
+ 343           ),
+ 344           const SizedBox(height: 12),
+ 345           Wrap(
+ 346             spacing: 12,
+ 347             runSpacing: 8,
+ 348             children: [
+ 349               ActionChip(
+ 350                 avatar: const Icon(Icons.date_range, size: 18),
+ 351                 label: Text(_dateFilter != null ? 'Date Range Set' : 'Date Range'),
+ 352                 onPressed: () async {
+ 353                   if (_points.isEmpty) return;
+ 354                   final picked = await showDateRangePicker(
+ 355                     context: context,
+ 356                     firstDate: firstTs,
+ 357                     lastDate: lastTs,
+ 358                     initialDateRange: _dateFilter,
+ 359                   );
+ 360                   if (picked != null) {
+ 361                     setState(() => _dateFilter = picked);
+ 362                     _applyFilters();
+ 363                   }
+ 364                 },
+ 365               ),
+ 366               ActionChip(
+ 367                 avatar: const Icon(Icons.tune, size: 18),
+ 368                 label: const Text('Magnitude Range'),
+ 369                 onPressed: _showMagnitudeFilter,
+ 370               ),
+ 371             ],
+ 372           ),
+ 373         ],
+ 374       ),
+ 375     );
+ 376   }
+ 377 
+ 378   void _showMagnitudeFilter() {
+ 379     double minVal =
+ 380         (_statistics['magnitude_min'] as double?)?.toDouble() ?? 0.0;
+ 381     double maxVal =
+ 382         (_statistics['magnitude_max'] as double?)?.toDouble() ?? 100000.0;
+ 383 
+ 384     showDialog(
+ 385       context: context,
+ 386       builder: (context) => AlertDialog(
+ 387         title: const Text('Magnitude Filter'),
+ 388         content: Column(
+ 389           mainAxisSize: MainAxisSize.min,
+ 390           children: [
+ 391             const Text('Filter by magnetic field magnitude (µT)'),
+ 392             const SizedBox(height: 16),
+ 393             RangeSlider(
+ 394               values: RangeValues(_minMagnitude, _maxMagnitude),
+ 395               min: minVal,
+ 396               max: maxVal,
+ 397               divisions: 100,
+ 398               labels: RangeLabels(
+ 399                 _minMagnitude.toStringAsFixed(1),
+ 400                 _maxMagnitude.toStringAsFixed(1),
+ 401               ),
+ 402               onChanged: (values) {
+ 403                 setState(() {
+ 404                   _minMagnitude = values.start;
+ 405                   _maxMagnitude = values.end;
+ 406                 });
+ 407               },
+ 408             ),
+ 409           ],
+ 410         ),
+ 411         actions: [
+ 412           TextButton(
+ 413             onPressed: () => Navigator.pop(context),
+ 414             child: const Text('Cancel'),
+ 415           ),
+ 416           FilledButton(
+ 417             onPressed: () {
+ 418               Navigator.pop(context);
+ 419               _applyFilters();
+ 420             },
+ 421             child: const Text('Apply'),
+ 422           ),
+ 423         ],
+ 424       ),
+ 425     );
+ 426   }
+ 427 
+ 428   Widget _buildOverviewTab() {
+ 429     return SingleChildScrollView(
+ 430       padding: const EdgeInsets.all(16),
+ 431       child: Column(
+ 432         crossAxisAlignment: CrossAxisAlignment.start,
+ 433         children: [
+ 434           GridView.count(
+ 435             shrinkWrap: true,
+ 436             physics: const NeverScrollableScrollPhysics(),
+ 437             crossAxisCount: 2,
+ 438             childAspectRatio: 1.3,
+ 439             mainAxisSpacing: 12,
+ 440             crossAxisSpacing: 12,
+ 441             children: [
+ 442               _StatCard(
+ 443                 title: 'Total Points',
+ 444                 value: '${_statistics['total_measurements'] ?? 0}',
+ 445                 icon: Icons.analytics,
+ 446                 color: Colors.blue,
+ 447                 subtitle: 'Data points collected',
+ 448               ),
+ 449               _StatCard(
+ 450                 title: 'Survey Duration',
+ 451                 value: '${_statistics['duration_hours'] ?? 0}h',
+ 452                 icon: Icons.access_time,
+ 453                 color: Colors.green,
+ 454                 subtitle: 'Collection time',
+ 455               ),
+ 456               _StatCard(
+ 457                 title: 'Survey Area',
+ 458                 value:
+ 459                     '${(((_statistics['survey_area_km2'] as double?) ?? 0).toStringAsFixed(2))} km²',
+ 460                 icon: Icons.map,
+ 461                 color: Colors.orange,
+ 462                 subtitle: 'Coverage area',
+ 463               ),
+ 464               _StatCard(
+ 465                 title: 'Anomalies Found',
+ 466                 value: '${_anomalies.length}',
+ 467                 icon: Icons.warning,
+ 468                 color: Colors.red,
+ 469                 subtitle: 'Unusual readings',
+ 470               ),
+ 471             ],
+ 472           ),
+ 473           const SizedBox(height: 20),
+ 474           _DataCard(
+ 475             title: 'Magnetic Field Statistics',
+ 476             child: Column(
+ 477               children: [
+ 478                 _buildStatRow('Minimum',
+ 479                     '${(((_statistics['magnitude_min'] as double?) ?? 0).toStringAsFixed(2))} µT'),
+ 480                 _buildStatRow('Maximum',
+ 481                     '${(((_statistics['magnitude_max'] as double?) ?? 0).toStringAsFixed(2))} µT'),
+ 482                 _buildStatRow('Mean',
+ 483                     '${(((_statistics['magnitude_mean'] as double?) ?? 0).toStringAsFixed(2))} µT'),
+ 484                 _buildStatRow('Median',
+ 485                     '${(((_statistics['magnitude_median'] as double?) ?? 0).toStringAsFixed(2))} µT'),
+ 486                 _buildStatRow('Std. Deviation',
+ 487                     '${(((_statistics['magnitude_std'] as double?) ?? 0).toStringAsFixed(2))} µT'),
+ 488               ],
+ 489             ),
+ 490           ),
+ 491           const SizedBox(height: 16),
+ 492           _DataCard(
+ 493             title: 'Survey Conditions',
+ 494             child: Column(
+ 495               children: [
+ 496                 _buildStatRow(
+ 497                     'Avg. Altitude',
+ 498                     '${(((_statistics['altitude_mean'] as double?) ?? 0).toStringAsFixed(1))} m'),
+ 499                 if (_statistics['gps_accuracy_mean'] != null)
+ 500                   _buildStatRow(
+ 501                       'Avg. GPS Accuracy',
+ 502                       '${(((_statistics['gps_accuracy_mean'] as double?) ?? 0).toStringAsFixed(1))} m'),
+ 503               ],
+ 504             ),
+ 505           ),
+ 506         ],
+ 507       ),
+ 508     );
+ 509   }
+ 510 
+ 511   Widget _buildStatRow(String label, String value) {
+ 512     return Padding(
+ 513       padding: const EdgeInsets.symmetric(vertical: 4),
+ 514       child: Row(
+ 515         mainAxisAlignment: MainAxisAlignment.spaceBetween,
+ 516         children: [
+ 517           Text(label),
+ 518           Text(
+ 519             value,
+ 520             style: const TextStyle(fontWeight: FontWeight.bold),
+ 521           ),
+ 522         ],
+ 523       ),
+ 524     );
+ 525   }
+ 526 
+ 527   Widget _buildTrendsTab() {
+ 528     return SingleChildScrollView(
+ 529       padding: const EdgeInsets.all(16),
+ 530       child: Column(
+ 531         children: [
+ 532           _DataCard(
+ 533             title: 'Magnetic Field Over Time',
+ 534             child: SizedBox(
+ 535               height: 220,
+ 536               child: _TimeSeriesChart(points: _points),
+ 537             ),
+ 538           ),
+ 539           const SizedBox(height: 16),
+ 540           _DataCard(
+ 541             title: 'Field Components',
+ 542             child: SizedBox(
+ 543               height: 200,
+ 544               child: _ComponentsChart(points: _points),
+ 545             ),
+ 546           ),
+ 547         ],
+ 548       ),
+ 549     );
+ 550   }
+ 551 
+ 552   Widget _buildAnomaliesTab() {
+ 553     if (_anomalies.isEmpty) {
+ 554       return const _ModernEmptyState(
+ 555         message: 'No significant anomalies detected in the survey data.',
+ 556         icon: Icons.check_circle_outline,
+ 557       );
+ 558     }
+ 559     return ListView.builder(
+ 560       padding: const EdgeInsets.all(16),
+ 561       itemCount: _anomalies.length,
+ 562       itemBuilder: (context, index) {
+ 563         final anomaly = _anomalies[index];
+ 564         final p = anomaly['point'] as MagneticReading;
+ 565         final severity = anomaly['severity'] as String;
+ 566         final deviation = anomaly['deviation'] as double;
+ 567         final severityColor = severity == 'High' ? Colors.red : Colors.orange;
+ 568 
+ 569         return Card(
+ 570           margin: const EdgeInsets.only(bottom: 12),
+ 571           child: ListTile(
+ 572             leading: CircleAvatar(
+ 573               backgroundColor: severityColor.withOpacity(0.1),
+ 574               child: Icon(
+ 575                 severity == 'High' ? Icons.priority_high : Icons.warning,
+ 576                 color: severityColor,
+ 577               ),
+ 578             ),
+ 579             title: Text('${p.totalField.toStringAsFixed(2)} µT'),
+ 580             subtitle: Column(
+ 581               crossAxisAlignment: CrossAxisAlignment.start,
+ 582               children: [
+ 583                 Text('Deviation: ${deviation.toStringAsFixed(2)} µT'),
+ 584                 Text(
+ 585                     'Location: ${p.latitude.toStringAsFixed(6)}, ${p.longitude.toStringAsFixed(6)}'),
+ 586                 Text('Time: ${_formatDateTime(p.timestamp)}'),
+ 587               ],
+ 588             ),
+ 589             trailing: Chip(
+ 590               label: Text(
+ 591                 severity,
+ 592                 style: TextStyle(
+ 593                     color: severityColor,
+ 594                     fontSize: 12,
+ 595                     fontWeight: FontWeight.bold),
+ 596               ),
+ 597               backgroundColor: severityColor.withOpacity(0.1),
+ 598             ),
+ 599             onTap: () => _showAnomalyDetails(anomaly),
+ 600           ),
+ 601         );
+ 602       },
+ 603     );
+ 604   }
+ 605 
+ 606   Widget _buildSpatialTab() {
+ 607     final center = _points.isNotEmpty
+ 608         ? LatLng(_points.first.latitude, _points.first.longitude)
+ 609         : const LatLng(0, 0);
+ 610 
+ 611     return SingleChildScrollView(
+ 612       padding: const EdgeInsets.all(16),
+ 613       child: Column(
+ 614         children: [
+ 615           _DataCard(
+ 616             title: 'Measurement Locations',
+ 617             action: IconButton(
+ 618               icon: const Icon(Icons.center_focus_strong),
+ 619               tooltip: 'Fit to data',
+ 620               onPressed: _fitMapToData,
+ 621             ),
+ 622             child: SizedBox(
+ 623               height: 300,
+ 624               child: FlutterMap(
+ 625                 mapController: _mapController,
+ 626                 options: MapOptions(
+ 627                   initialCenter: center,
+ 628                   initialZoom: 3,
+ 629                   onMapReady: () => _fitMapToData(),
+ 630                   maxZoom: 18,
+ 631                   minZoom: 2,
+ 632                 ),
+ 633                 children: [
+ 634                   TileLayer(
+ 635                     urlTemplate:
+ 636                         'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+ 637                     subdomains: const ['a', 'b', 'c'],
+ 638                     userAgentPackageName: 'com.example.magnetic_survey_app',
+ 639                   ),
+ 640                   if (_points.isNotEmpty)
+ 641                     CircleLayer(
+ 642                       circles: _points
+ 643                           .map(
+ 644                             (p) => CircleMarker(
+ 645                               point: LatLng(p.latitude, p.longitude),
+ 646                               radius: 3,
+ 647                               color: _colorForField(p.totalField),
+ 648                               borderColor: Colors.white,
+ 649                               borderStrokeWidth: 1,
+ 650                             ),
+ 651                           )
+ 652                           .toList(),
+ 653                     ),
+ 654                   if (_anomalies.isNotEmpty)
+ 655                     MarkerLayer(
+ 656                       markers: _anomalies
+ 657                           .map((a) {
+ 658                             final p = a['point'] as MagneticReading;
+ 659                             return Marker(
+ 660                               point: LatLng(p.latitude, p.longitude),
+ 661                               child: const Icon(Icons.warning,
+ 662                                   color: Colors.orange, size: 16),
+ 663                             );
+ 664                           })
+ 665                           .toList(),
+ 666                     ),
+ 667                 ],
+ 668               ),
+ 669             ),
+ 670           ),
+ 671           const SizedBox(height: 16),
+ 672           _DataCard(
+ 673             title: 'Survey Bounds',
+ 674             child: Column(children: [_buildCoordinateInfo()]),
+ 675           ),
+ 676         ],
+ 677       ),
+ 678     );
+ 679   }
+ 680 
+ 681   void _fitMapToData() {
+ 682     if (_points.isEmpty) return;
+ 683     try {
+ 684       final bounds = LatLngBounds();
+ 685       for (final p in _points) {
+ 686         bounds.extend(LatLng(p.latitude, p.longitude));
+ 687       }
+ 688       _mapController.fitCamera(
+ 689         CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(24)),
+ 690       );
+ 691     } catch (_) {}
+ 692   }
+ 693 
+ 694   Color _colorForField(double field) {
+ 695     // Map 20–70 µT to a blue->red gradient
+ 696     final minF = 20.0, maxF = 70.0;
+ 697     double t = ((field - minF) / (maxF - minF)).clamp(0.0, 1.0);
+ 698     if (t < 0.3) {
+ 699       return Color.lerp(Colors.blue, Colors.cyan, t / 0.3)!;
+ 700     } else if (t < 0.5) {
+ 701       return Color.lerp(Colors.cyan, Colors.green, (t - 0.3) / 0.2)!;
+ 702     } else if (t < 0.7) {
+ 703       return Color.lerp(Colors.green, Colors.yellow, (t - 0.5) / 0.2)!;
+ 704     } else if (t < 0.85) {
+ 705       return Color.lerp(Colors.yellow, Colors.orange, (t - 0.7) / 0.15)!;
+ 706     } else {
+ 707       return Color.lerp(Colors.orange, Colors.red, (t - 0.85) / 0.15)!;
+ 708     }
+ 709   }
+ 710 
+ 711 // ================= Charts =================
+ 712 
+ 713 }
+ 714 
+ 715 class _TimeSeriesChart extends StatelessWidget {
+ 716   const _TimeSeriesChart({required this.points});
+ 717   final List<MagneticReading> points;
+ 718   @override
+ 719   Widget build(BuildContext context) {
+ 720     if (points.length < 2) {
+ 721       return const Center(child: Text('Not enough data to render chart'));
+ 722     }
+ 723     return CustomPaint(
+ 724       painter: _TimeSeriesChartPainter(points),
+ 725     );
+ 726   }
+ 727 }
+ 728 
+ 729 class _TimeSeriesChartPainter extends CustomPainter {
+ 730   _TimeSeriesChartPainter(this.points);
+ 731   final List<MagneticReading> points;
+ 732   @override
+ 733   void paint(Canvas canvas, Size size) {
+ 734     final padding = 28.0;
+ 735     final area = Rect.fromLTWH(padding, 8, size.width - padding - 8, size.height - padding - 16);
+ 736 
+ 737     // Background grid
+ 738     final gridPaint = Paint()
+ 739       ..color = Colors.grey.withOpacity(0.2)
+ 740       ..strokeWidth = 1;
+ 741     const hLines = 4;
+ 742     for (int i = 0; i <= hLines; i++) {
+ 743       final y = area.top + i * area.height / hLines;
+ 744       canvas.drawLine(Offset(area.left, y), Offset(area.right, y), gridPaint);
+ 745     }
+ 746 
+ 747     // Compute ranges
+ 748     final values = points.map((p) => p.totalField).toList();
+ 749     final minV = values.reduce(math.min);
+ 750     final maxV = values.reduce(math.max);
+ 751     final ts0 = points.first.timestamp.millisecondsSinceEpoch.toDouble();
+ 752     final ts1 = points.last.timestamp.millisecondsSinceEpoch.toDouble();
+ 753     final span = (ts1 - ts0).abs() > 0 ? (ts1 - ts0) : 1.0;
+ 754 
+ 755     Offset toPoint(MagneticReading p) {
+ 756       final x = area.left + (p.timestamp.millisecondsSinceEpoch - ts0) / span * area.width;
+ 757       final y = area.bottom - ((p.totalField - minV) / ((maxV - minV) == 0 ? 1 : (maxV - minV))) * area.height;
+ 758       return Offset(x, y);
+ 759     }
+ 760 
+ 761     // Line path
+ 762     final path = Path();
+ 763     for (int i = 0; i < points.length; i++) {
+ 764       final pt = toPoint(points[i]);
+ 765       if (i == 0) path.moveTo(pt.dx, pt.dy);
+ 766       else path.lineTo(pt.dx, pt.dy);
+ 767     }
+ 768     final linePaint = Paint()
+ 769       ..color = Colors.blue
+ 770       ..style = PaintingStyle.stroke
+ 771       ..strokeWidth = 2;
+ 772     canvas.drawPath(path, linePaint);
+ 773 
+ 774     // Axis labels (min/max)
+ 775     final tpMin = TextPainter(
+ 776         text: TextSpan(text: minV.toStringAsFixed(1), style: const TextStyle(fontSize: 10, color: Colors.black54)),
+ 777         textDirection: TextDirection.ltr)
+ 778       ..layout();
+ 779     final tpMax = TextPainter(
+ 780         text: TextSpan(text: maxV.toStringAsFixed(1), style: const TextStyle(fontSize: 10, color: Colors.black54)),
+ 781         textDirection: TextDirection.ltr)
+ 782       ..layout();
+ 783     tpMin.paint(canvas, Offset(4, area.bottom - tpMin.height / 2));
+ 784     tpMax.paint(canvas, Offset(4, area.top - tpMax.height / 2));
+ 785   }
+ 786 
+ 787   @override
+ 788   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+ 789 }
+ 790 
+ 791 class _ComponentsChart extends StatelessWidget {
+ 792   const _ComponentsChart({required this.points});
+ 793   final List<MagneticReading> points;
+ 794   @override
+ 795   Widget build(BuildContext context) {
+ 796     final hasAny = points.any((p) => (p.magneticX ?? 0) != 0 || (p.magneticY ?? 0) != 0 || (p.magneticZ ?? 0) != 0);
+ 797     if (points.length < 2 || !hasAny) {
+ 798       return const Center(child: Text('Component data not available'));
+ 799     }
+ 800     return CustomPaint(
+ 801       painter: _ComponentsChartPainter(points),
+ 802     );
+ 803   }
+ 804 }
+ 805 
+ 806 class _ComponentsChartPainter extends CustomPainter {
+ 807   _ComponentsChartPainter(this.points);
+ 808   final List<MagneticReading> points;
+ 809   @override
+ 810   void paint(Canvas canvas, Size size) {
+ 811     final padding = 28.0;
+ 812     final area = Rect.fromLTWH(padding, 8, size.width - padding - 8, size.height - padding - 16);
+ 813     final gridPaint = Paint()
+ 814       ..color = Colors.grey.withOpacity(0.2)
+ 815       ..strokeWidth = 1;
+ 816     const hLines = 4;
+ 817     for (int i = 0; i <= hLines; i++) {
+ 818       final y = area.top + i * area.height / hLines;
+ 819       canvas.drawLine(Offset(area.left, y), Offset(area.right, y), gridPaint);
+ 820     }
+ 821 
+ 822     final xs = points.map((p) => p.magneticX ?? 0.0).toList();
+ 823     final ys = points.map((p) => p.magneticY ?? 0.0).toList();
+ 824     final zs = points.map((p) => p.magneticZ ?? 0.0).toList();
+ 825     final all = <double>[]..addAll(xs)..addAll(ys)..addAll(zs);
+ 826     final minV = all.reduce(math.min);
+ 827     final maxV = all.reduce(math.max);
+ 828     final ts0 = points.first.timestamp.millisecondsSinceEpoch.toDouble();
+ 829     final ts1 = points.last.timestamp.millisecondsSinceEpoch.toDouble();
+ 830     final span = (ts1 - ts0).abs() > 0 ? (ts1 - ts0) : 1.0;
+ 831 
+ 832     Offset toPoint(double v, DateTime ts) {
+ 833       final x = area.left + (ts.millisecondsSinceEpoch - ts0) / span * area.width;
+ 834       final y = area.bottom - ((v - minV) / ((maxV - minV) == 0 ? 1 : (maxV - minV))) * area.height;
+ 835       return Offset(x, y);
+ 836     }
+ 837 
+ 838     void drawSeries(List<double> series, Color color) {
+ 839       final path = Path();
+ 840       for (int i = 0; i < points.length; i++) {
+ 841         final pt = toPoint(series[i], points[i].timestamp);
+ 842         if (i == 0) path.moveTo(pt.dx, pt.dy); else path.lineTo(pt.dx, pt.dy);
+ 843       }
+ 844       final paint = Paint()
+ 845         ..color = color
+ 846         ..style = PaintingStyle.stroke
+ 847         ..strokeWidth = 1.8;
+ 848       canvas.drawPath(path, paint);
+ 849     }
+ 850 
+ 851     drawSeries(xs, Colors.blue);
+ 852     drawSeries(ys, Colors.orange);
+ 853     drawSeries(zs, Colors.green);
+ 854 
+ 855     final legendStyle = const TextStyle(fontSize: 10, color: Colors.black87);
+ 856     final legendY = area.top - 2;
+ 857     _legend(canvas, Offset(area.right - 110, legendY), Colors.blue, 'X', legendStyle);
+ 858     _legend(canvas, Offset(area.right - 70, legendY), Colors.orange, 'Y', legendStyle);
+ 859     _legend(canvas, Offset(area.right - 30, legendY), Colors.green, 'Z', legendStyle);
+ 860   }
+ 861 
+ 862   void _legend(Canvas canvas, Offset pos, Color color, String label, TextStyle style) {
+ 863     final paint = Paint()..color = color..strokeWidth = 3;
+ 864     canvas.drawLine(pos, pos + const Offset(16, 0), paint);
+ 865     final tp = TextPainter(text: TextSpan(text: label, style: style), textDirection: TextDirection.ltr)..layout();
+ 866     tp.paint(canvas, pos + const Offset(20, -6));
+ 867   }
+ 868 
+ 869   @override
+ 870   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+ 871 }
+ 872 
+ 873   Widget _buildCoordinateInfo() {
+ 874     if (_points.isEmpty) return const Text('No data available');
+ 875 
+ 876     final lats = _points.map((p) => p.latitude).toList()..sort();
+ 877     final lngs = _points.map((p) => p.longitude).toList()..sort();
+ 878 
+ 879     return Column(
+ 880       children: [
+ 881         _buildStatRow('North Bound', '${lats.last.toStringAsFixed(6)}°'),
+ 882         _buildStatRow('South Bound', '${lats.first.toStringAsFixed(6)}°'),
+ 883         _buildStatRow('East Bound', '${lngs.last.toStringAsFixed(6)}°'),
+ 884         _buildStatRow('West Bound', '${lngs.first.toStringAsFixed(6)}°'),
+ 885         const Divider(),
+ 886         _buildStatRow('Lat Range',
+ 887             '${(lats.last - lats.first).toStringAsFixed(6)}°'),
+ 888         _buildStatRow('Lng Range',
+ 889             '${(lngs.last - lngs.first).toStringAsFixed(6)}°'),
+ 890       ],
+ 891     );
+ 892   }
+ 893 
+ 894   void _showAnomalyDetails(Map<String, dynamic> anomaly) {
+ 895     final p = anomaly['point'] as MagneticReading;
+ 896     final deviation = anomaly['deviation'] as double;
+ 897     final severity = anomaly['severity'] as String;
+ 898 
+ 899     showDialog(
+ 900       context: context,
+ 901       builder: (context) => AlertDialog(
+ 902         title: const Text('Anomaly Details'),
+ 903         content: Column(
+ 904           mainAxisSize: MainAxisSize.min,
+ 905           crossAxisAlignment: CrossAxisAlignment.start,
+ 906           children: [
+ 907             _buildDetailRow('Total Field', '${p.totalField.toStringAsFixed(3)} µT'),
+ 908             _buildDetailRow('Deviation', '${deviation.toStringAsFixed(3)} µT'),
+ 909             _buildDetailRow('Severity', severity),
+ 910             _buildDetailRow('X Component',
+ 911                 '${(p.magneticX ?? 0).toStringAsFixed(3)} µT'),
+ 912             _buildDetailRow('Y Component',
+ 913                 '${(p.magneticY ?? 0).toStringAsFixed(3)} µT'),
+ 914             _buildDetailRow('Z Component',
+ 915                 '${(p.magneticZ ?? 0).toStringAsFixed(3)} µT'),
+ 916             _buildDetailRow('Latitude', '${p.latitude.toStringAsFixed(6)}°'),
+ 917             _buildDetailRow('Longitude', '${p.longitude.toStringAsFixed(6)}°'),
+ 918             if (p.altitude != null)
+ 919               _buildDetailRow('Altitude', '${p.altitude!.toStringAsFixed(1)} m'),
+ 920             _buildDetailRow('Timestamp', _formatDateTime(p.timestamp)),
+ 921             if (p.accuracy != null)
+ 922               _buildDetailRow(
+ 923                   'GPS Accuracy', '${p.accuracy!.toStringAsFixed(1)} m'),
+ 924           ],
+ 925         ),
+ 926         actions: [
+ 927           TextButton(
+ 928             onPressed: () => Navigator.pop(context),
+ 929             child: const Text('Close'),
+ 930           ),
+ 931           FilledButton(
+ 932             onPressed: () {
+ 933               Navigator.pop(context);
+ 934               ScaffoldMessenger.of(context).showSnackBar(
+ 935                 const SnackBar(
+ 936                   content: Text('Anomaly marked for review'),
+ 937                   backgroundColor: Colors.green,
+ 938                 ),
+ 939               );
+ 940             },
+ 941             child: const Text('Mark Reviewed'),
+ 942           ),
+ 943         ],
+ 944       ),
+ 945     );
+ 946   }
+ 947 
+ 948   Widget _buildDetailRow(String label, String value) {
+ 949     return Padding(
+ 950       padding: const EdgeInsets.symmetric(vertical: 2),
+ 951       child: Row(
+ 952         crossAxisAlignment: CrossAxisAlignment.start,
+ 953         children: [
+ 954           SizedBox(
+ 955             width: 110,
+ 956             child: Text('$label:', style: const TextStyle(fontWeight: FontWeight.w500)),
+ 957           ),
+ 958           Expanded(
+ 959             child: Text(value),
+ 960           ),
+ 961         ],
+ 962       ),
+ 963     );
+ 964   }
+ 965 
+ 966   String _formatDateTime(DateTime dt) {
+ 967     return '${dt.day}/${dt.month}/${dt.year} ${dt.hour}:${dt.minute.toString().padLeft(2, '0')}';
+ 968   }
+ 969 }
+ 970 
+ 971 // Lightweight versions of the "modern" widgets used in the screen
+ 972 class _ModernLoadingIndicator extends StatelessWidget {
+ 973   const _ModernLoadingIndicator({required this.message});
+ 974   final String message;
+ 975   @override
+ 976   Widget build(BuildContext context) {
+ 977     return Center(
+ 978       child: Column(
+ 979         mainAxisSize: MainAxisSize.min,
+ 980         children: [
+ 981           const CircularProgressIndicator(),
+ 982           const SizedBox(height: 12),
+ 983           Text(message),
+ 984         ],
+ 985       ),
+ 986     );
+ 987   }
+ 988 }
+ 989 
+ 990 class _ModernErrorState extends StatelessWidget {
+ 991   const _ModernErrorState({required this.message, required this.onRetry});
+ 992   final String message;
+ 993   final VoidCallback onRetry;
+ 994   @override
+ 995   Widget build(BuildContext context) {
+ 996     return Center(
+ 997       child: Column(
+ 998         mainAxisSize: MainAxisSize.min,
+ 999         children: [
+1000           const Icon(Icons.error_outline, size: 48, color: Colors.red),
+1001           const SizedBox(height: 8),
+1002           Text(message, textAlign: TextAlign.center),
+1003           const SizedBox(height: 12),
+1004           FilledButton(onPressed: onRetry, child: const Text('Retry')),
+1005         ],
+1006       ),
+1007     );
+1008   }
+1009 }
+1010 
+1011 class _ModernEmptyState extends StatelessWidget {
+1012   const _ModernEmptyState({
+1013     required this.message,
+1014     required this.icon,
+1015     this.actionText,
+1016     this.onAction,
+1017   });
+1018   final String message;
+1019   final IconData icon;
+1020   final String? actionText;
+1021   final VoidCallback? onAction;
+1022   @override
+1023   Widget build(BuildContext context) {
+1024     return Center(
+1025       child: Column(
+1026         mainAxisSize: MainAxisSize.min,
+1027         children: [
+1028           Icon(icon, size: 64, color: Colors.grey[400]),
+1029           const SizedBox(height: 12),
+1030           Text(message, textAlign: TextAlign.center),
+1031           if (actionText != null) ...[
+1032             const SizedBox(height: 12),
+1033             FilledButton(onPressed: onAction, child: Text(actionText!)),
+1034           ]
+1035         ],
+1036       ),
+1037     );
+1038   }
+1039 }
+1040 
+1041 class _StatCard extends StatelessWidget {
+1042   const _StatCard({
+1043     required this.title,
+1044     required this.value,
+1045     required this.icon,
+1046     required this.color,
+1047     this.subtitle,
+1048   });
+1049   final String title;
+1050   final String value;
+1051   final IconData icon;
+1052   final Color color;
+1053   final String? subtitle;
+1054   @override
+1055   Widget build(BuildContext context) {
+1056     return Card(
+1057       child: Padding(
+1058         padding: const EdgeInsets.all(12),
+1059         child: Column(
+1060           crossAxisAlignment: CrossAxisAlignment.start,
+1061           children: [
+1062             Row(
+1063               children: [
+1064                 CircleAvatar(backgroundColor: color.withOpacity(0.15), child: Icon(icon, color: color)),
+1065                 const SizedBox(width: 8),
+1066                 Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.w600))),
+1067               ],
+1068             ),
+1069             const Spacer(),
+1070             Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+1071             if (subtitle != null) ...[
+1072               const SizedBox(height: 4),
+1073               Text(subtitle!, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+1074             ],
+1075           ],
+1076         ),
+1077       ),
+1078     );
+1079   }
+1080 }
+1081 
+1082 class _DataCard extends StatelessWidget {
+1083   const _DataCard({required this.title, required this.child, this.action});
+1084   final String title;
+1085   final Widget child;
+1086   final Widget? action;
+1087   @override
+1088   Widget build(BuildContext context) {
+1089     return Card(
+1090       child: Padding(
+1091         padding: const EdgeInsets.all(12),
+1092         child: Column(
+1093           crossAxisAlignment: CrossAxisAlignment.start,
+1094           children: [
+1095             Row(
+1096               children: [
+1097                 Expanded(
+1098                   child: Text(title,
+1099                       style: const TextStyle(
+1100                           fontSize: 16, fontWeight: FontWeight.bold)),
+1101                 ),
+1102                 if (action != null) action!,
+1103               ],
+1104             ),
+1105             const SizedBox(height: 8),
+1106             child,
+1107           ],
+1108         ),
+1109       ),
+1110     );
+1111   }
+1112 }

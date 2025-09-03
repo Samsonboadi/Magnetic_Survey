@@ -11,6 +11,7 @@ class MagneticReading {
   final DateTime timestamp;
   final String? notes;
   final int projectId;
+  final int? gridId; // optional grid linkage
   
   // ADDED: Missing properties that your code expects
   final double accuracy; // GPS accuracy in meters
@@ -28,6 +29,7 @@ class MagneticReading {
     required this.timestamp,
     this.notes,
     required this.projectId,
+    this.gridId,
     // ADDED: Default values for new properties
     this.accuracy = 5.0, // Default GPS accuracy
     this.heading, // Optional compass heading
@@ -46,6 +48,7 @@ class MagneticReading {
       'timestamp': timestamp.toIso8601String(),
       'notes': notes,
       'projectId': projectId,
+      'gridId': gridId,
       // ADDED: Include new properties in map
       'accuracy': accuracy,
       'heading': heading,
@@ -65,6 +68,7 @@ class MagneticReading {
       timestamp: DateTime.parse(map['timestamp']),
       notes: map['notes'],
       projectId: map['projectId'],
+      gridId: map['gridId'],
       // ADDED: Handle new properties with defaults
       accuracy: map['accuracy']?.toDouble() ?? 5.0,
       heading: map['heading']?.toDouble(),

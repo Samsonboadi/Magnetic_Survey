@@ -24,7 +24,7 @@ Future<Database> _initDB(String filePath) async {
 
   return await openDatabase(
     path,
-    version: 3, // UPDATED: Increment version to trigger migration
+    version: 4, // UPDATED: Increment version for grids + gridId
     onCreate: _createDB,
     onUpgrade: _upgradeDB,
   );
@@ -58,8 +58,29 @@ Future<void> _createDB(Database db, int version) async {
       timestamp TEXT NOT NULL,
       notes TEXT,
       projectId INTEGER NOT NULL,
+      gridId INTEGER,
       accuracy REAL DEFAULT 5.0,
       heading REAL,
+      FOREIGN KEY (projectId) REFERENCES projects (id) ON DELETE CASCADE,
+      FOREIGN KEY (gridId) REFERENCES grids (id) ON DELETE SET NULL
+    )
+  ''');
+
+    // Grids table
+  await db.execute('''
+    CREATE TABLE grids (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      projectId INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      createdAt TEXT NOT NULL,
+      spacing REAL,
+      rows INTEGER,
+      cols INTEGER,
+      points INTEGER,
+      centerLat REAL,
+      centerLon REAL,
+      boundaryPoints TEXT,
       FOREIGN KEY (projectId) REFERENCES projects (id) ON DELETE CASCADE
     )
   ''');
@@ -81,6 +102,8 @@ Future<void> _createDB(Database db, int version) async {
 
     // Create indexes for better performance
     await db.execute('CREATE INDEX idx_magnetic_project ON magnetic_readings(projectId)');
+    await db.execute('CREATE INDEX idx_magnetic_grid ON magnetic_readings(gridId)');
+    await db.execute('CREATE INDEX idx_grids_project ON grids(projectId)');
     await db.execute('CREATE INDEX idx_magnetic_timestamp ON magnetic_readings(timestamp)');
     await db.execute('CREATE INDEX idx_field_notes_project ON field_notes(projectId)');
   }
@@ -117,6 +140,32 @@ Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
     } catch (e) {
       print('Column heading might already exist: $e');
     }
+  }
+  if (oldVersion < 4) {
+    try {
+      await db.execute('ALTER TABLE magnetic_readings ADD COLUMN gridId INTEGER');
+    } catch (e) {
+      print('Column gridId might already exist: $e');
+    }
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS grids (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        projectId INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        createdAt TEXT NOT NULL,
+        spacing REAL,
+        rows INTEGER,
+        cols INTEGER,
+        points INTEGER,
+        centerLat REAL,
+        centerLon REAL,
+        boundaryPoints TEXT,
+        FOREIGN KEY (projectId) REFERENCES projects (id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_magnetic_grid ON magnetic_readings(gridId)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_grids_project ON grids(projectId)');
   }
 }
 
@@ -165,6 +214,22 @@ Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
       orderBy: 'timestamp ASC',
     );
     return result.map((map) => MagneticReading.fromMap(map)).toList();
+  }
+
+  // Grid operations
+  Future<int> insertGrid(Map<String, dynamic> grid) async {
+    final db = await instance.database;
+    return await db.insert('grids', grid);
+  }
+
+  Future<List<Map<String, dynamic>>> getGridsForProject(int projectId) async {
+    final db = await instance.database;
+    return await db.query('grids', where: 'projectId = ?', whereArgs: [projectId], orderBy: 'createdAt DESC');
+  }
+
+  Future<void> deleteGrid(int gridId) async {
+    final db = await instance.database;
+    await db.delete('grids', where: 'id = ?', whereArgs: [gridId]);
   }
 
   Future<int> getReadingCountForProject(int projectId) async {

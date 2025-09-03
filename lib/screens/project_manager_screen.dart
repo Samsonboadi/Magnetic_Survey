@@ -1,4 +1,4 @@
-// COMPLETE CORRECTED project_manager_screen.dart
+﻿// COMPLETE CORRECTED project_manager_screen.dart
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -8,6 +8,7 @@ import '../models/magnetic_reading.dart';
 import '../services/database_service.dart';
 import '../services/export_service.dart'; // ADD THIS IMPORT
 import 'survey_screen.dart';
+import 'project_detail_screen.dart';
 
 class ProjectManagerScreen extends StatefulWidget {
   @override
@@ -326,7 +327,7 @@ class _ProjectManagerScreenState extends State<ProjectManagerScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => SurveyScreen(project: project),
+        builder: (context) => ProjectDetailScreen(project: project),
       ),
     );
   }

@@ -26,6 +26,7 @@ import '../services/sensor_service.dart';
 import '../services/team_sync_service.dart';
 import '../services/export_service.dart';
 import '../widgets/team_panel.dart';
+import 'data_analysis.dart';
 
 enum MapBaseLayer {
   openStreetMap,
@@ -37,11 +38,13 @@ class SurveyScreen extends StatefulWidget {
   final SurveyProject? project;
   final List<GridCell>? initialGridCells;
   final LatLng? gridCenter;
+  final int? selectedGridId;
 
   SurveyScreen({
     this.project,
     this.initialGridCells,
     this.gridCenter,
+    this.selectedGridId,
   });
 
   @override
@@ -65,6 +68,8 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
   double _deviceHeading = 0.0; // Raw device heading
   double _navigationHeading = 0.0; // Processed heading for navigation
   bool _useStackOverflowFix = true; // Apply the StackOverflow heading correction
+  // User preference: tap map to record (default off)
+  bool _tapToRecordEnabled = false;
 
   // Survey data
   List<LatLng> _collectedPoints = [];
@@ -97,7 +102,8 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
   // UI state
   bool _showGrid = true;
   bool _showTeamMembers = false;
-  bool _showCompass = true;
+  // Hide compass widget by default; no toggle in UI
+  bool _showCompass = false;
   bool _autoNavigate = true;
   bool _isCollecting = false;
   bool _isTeamMode = false;
@@ -412,10 +418,11 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
 
   void _startMapOrientationUpdates() {
     _orientationUpdateTimer?.cancel();
-    _orientationUpdateTimer = Timer.periodic(Duration(milliseconds: 500), (timer) { // Faster updates for smoother rotation
+    // Faster, smoother updates for full rotation responsiveness
+    _orientationUpdateTimer = Timer.periodic(Duration(milliseconds: 250), (timer) {
       if (_heading != null && _isMapOrientationEnabled && _isMapReady) {
         // Update more frequently for smoother rotation (reduced threshold)
-        if (_lastHeading == null || (_heading! - _lastHeading!).abs() > 5.0) { // Reduced from 10 to 5 degrees
+        if (_lastHeading == null || (_heading! - _lastHeading!).abs() > 2.0) {
           _updateMapRotation(_heading!);
           _lastHeading = _heading;
         }
@@ -437,10 +444,13 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     }
     
     try {
+      // Normalize heading to 0..360 for consistent full rotation
+      double h = heading % 360.0;
+      if (h < 0) h += 360.0;
       // FIXED: For true Google Maps-style navigation rotation
       // The map should rotate so that your facing direction is always "up"
       // Convert heading to radians for map rotation
-      double rotationRadians = -heading * (math.pi / 180.0); // Negative for correct rotation direction
+      double rotationRadians = -h * (math.pi / 180.0); // Negative for correct rotation direction
       
       // Get current camera position
       final currentCamera = _mapController.camera;
@@ -453,13 +463,14 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
       );
       
       if (kDebugMode) {
-        print('Map rotated to heading: ${heading.toStringAsFixed(1)}°, map rotation: ${rotationRadians.toStringAsFixed(3)} radians');
+        print('Map rotated to heading: ${h.toStringAsFixed(1)}°, map rotation: ${rotationRadians.toStringAsFixed(3)} radians');
       }
     } catch (e) {
       print('Error updating map rotation: $e');
       // Fallback: try simple rotation
       try {
-        double rotationRadians = -heading * (math.pi / 180.0);
+        double h = heading % 360.0; if (h < 0) h += 360.0;
+        double rotationRadians = -h * (math.pi / 180.0);
         _mapController.rotate(rotationRadians);
       } catch (fallbackError) {
         print('Fallback rotation also failed: $fallbackError');
@@ -656,6 +667,7 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     try {
       final reading = MagneticReading(
         projectId: widget.project?.id ?? 0,
+        gridId: widget.selectedGridId,
         latitude: _currentPosition!.latitude,
         longitude: _currentPosition!.longitude,
         magneticX: _magneticX - _magneticCalibrationX,
@@ -843,7 +855,7 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
         },
         onTap: (tapPosition, point) {
           print('Map tapped at: ${point.latitude}, ${point.longitude}');
-          if (_surveyMode == 'manual' && !_isCollecting) {
+          if (_tapToRecordEnabled && _surveyMode == 'manual' && !_isCollecting) {
             _recordMagneticReading();
           }
         },
@@ -994,6 +1006,20 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
       foregroundColor: Colors.white,
       actions: [
         IconButton(
+          icon: Icon(Icons.analytics),
+          tooltip: 'Data Analysis',
+          onPressed: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => DataAnalysisScreen(
+                  readings: List.from(_savedReadings),
+                  project: widget.project,
+                ),
+              ),
+            );
+          },
+        ),
+        IconButton(
           icon: Icon(Icons.settings),
           onPressed: _showSettings,
         ),
@@ -1052,13 +1078,7 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
             ],
           ),
         ),
-        
-        // Compass Widget
-        if (_showCompass)
-          Padding(
-            padding: EdgeInsets.only(top: 12),
-            child: _buildCompassWidget(),
-          ),
+        // Compass widget removed from UI for cleaner layout
       ],
     );
   }
@@ -1116,67 +1136,85 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
 
   // FIXED: Horizontal magnetic scale in top right corner
   Widget _buildHorizontalMagneticScale() {
+    const double minField = 20.0;
+    const double midField = 45.0;
+    const double maxField = 70.0;
+
+    double value = _totalField.isFinite ? _totalField : midField;
+    double normalized = ((value - minField) / (maxField - minField)).clamp(0.0, 1.0);
+
     return Container(
-      width: 200,
-      height: 50,
+      width: 180,
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.95),
-        borderRadius: BorderRadius.circular(8),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black26,
-            blurRadius: 4,
-            offset: Offset(0, 2),
-          ),
-        ],
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(0, 3))],
       ),
+      padding: EdgeInsets.fromLTRB(10, 6, 10, 6),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          // Title
-          Padding(
-            padding: EdgeInsets.only(top: 4, bottom: 2),
-            child: Text(
-              'Magnetic Field (μT)', // Correct units: microTesla
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-                color: Colors.black87,
-              ),
-            ),
-          ),
-          // Horizontal gradient scale
-          Expanded(
-            child: Container(
-              margin: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(3),
-                gradient: LinearGradient(
-                  colors: [
-                    Colors.blue,      // 20 μT (low)
-                    Colors.cyan,      // 35 μT
-                    Colors.green,     // 45 μT
-                    Colors.yellow,    // 55 μT  
-                    Colors.orange,    // 60 μT
-                    Colors.red,       // 70 μT (high)
-                  ],
-                  stops: [0.0, 0.3, 0.5, 0.7, 0.85, 1.0],
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final barHeight = 6.0;
+              final indicatorSize = 8.0;
+              return Column(
                 children: [
-                  Padding(
-                    padding: EdgeInsets.only(left: 4),
-                    child: Text('20', style: TextStyle(fontSize: 8, color: Colors.white, fontWeight: FontWeight.bold)),
+                  Stack(
+                    alignment: Alignment.centerLeft,
+                    children: [
+                      // Gradient bar
+                      SizedBox(
+                        height: barHeight,
+                        width: constraints.maxWidth,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(barHeight / 2),
+                            gradient: LinearGradient(
+                              colors: [
+                                Colors.blue,
+                                Colors.cyan,
+                                Colors.green,
+                                Colors.yellow,
+                                Colors.orange,
+                                Colors.red,
+                              ],
+                              stops: [0.0, 0.3, 0.5, 0.7, 0.85, 1.0],
+                            ),
+                          ),
+                        ),
+                      ),
+                      // Moving indicator
+                      AnimatedPositioned(
+                        duration: Duration(milliseconds: 250),
+                        curve: Curves.easeOut,
+                        left: (constraints.maxWidth - indicatorSize) * normalized,
+                        child: Container(
+                          width: indicatorSize,
+                          height: indicatorSize,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                            boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))],
+                            border: Border.all(color: Colors.black12),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                  Text('45', style: TextStyle(fontSize: 8, color: Colors.white, fontWeight: FontWeight.bold)),
-                  Padding(
-                    padding: EdgeInsets.only(right: 4),
-                    child: Text('70', style: TextStyle(fontSize: 8, color: Colors.white, fontWeight: FontWeight.bold)),
+                  SizedBox(height: 2),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('${minField.toStringAsFixed(0)}', style: TextStyle(fontSize: 8, color: Colors.black54)),
+                      Text('${midField.toStringAsFixed(0)}', style: TextStyle(fontSize: 8, color: Colors.black54)),
+                      Text('${maxField.toStringAsFixed(0)}', style: TextStyle(fontSize: 8, color: Colors.black54)),
+                    ],
                   ),
                 ],
-              ),
-            ),
+              );
+            },
           ),
         ],
       ),
@@ -1371,43 +1409,42 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
 
   // ENHANCED FLOATING ACTION BUTTONS WITH NAVIGATION CONTROLS
   Widget _buildFloatingActionButtons() {
+    // Simplified FABs: only map orientation, manual record, and auto record
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // Navigation mode toggle (NEW - choose between icon rotation vs map rotation)
-        _buildNavigationModeToggle(),
-        
-        SizedBox(height: 8),
-        
-        // StackOverflow fix toggle (NEW - for testing the heading correction)
-        _buildStackOverflowFixToggle(),
-        
-        SizedBox(height: 12),
-        
-        // Map orientation button (MODIFIED - only works in map rotation mode)
+        // Map orientation button (auto-switches to Map Rotation mode if needed)
         FloatingActionButton.small(
           heroTag: "map_orientation",
-          onPressed: _rotateIconWithMap ? null : _toggleMapOrientation, // Disable when in icon rotation mode
-          backgroundColor: (!_rotateIconWithMap && _isMapOrientationEnabled) 
-              ? Colors.deepPurple 
-              : Colors.grey,
+          onPressed: () {
+            if (_rotateIconWithMap) {
+              // Auto-switch to Map Rotation mode and enable orientation
+              _toggleNavigationMode();
+            } else {
+              // Toggle orientation within Map Rotation mode
+              _toggleMapOrientation();
+            }
+          },
+          backgroundColor: _rotateIconWithMap
+              ? Colors.purple // Indicate action available even in icon mode
+              : (_isMapOrientationEnabled ? Colors.deepPurple : Colors.grey),
           child: Icon(
-            (_isMapOrientationEnabled && !_rotateIconWithMap) 
-                ? Icons.explore 
+            (!_rotateIconWithMap && _isMapOrientationEnabled)
+                ? Icons.explore
                 : Icons.explore_outlined,
             color: Colors.white,
             size: 20,
           ),
           tooltip: _rotateIconWithMap
-              ? 'Switch to Map Rotation mode first'
-              : (_isMapOrientationEnabled 
-                  ? 'Disable Map Orientation' 
+              ? 'Enable Map Rotation (switch mode)'
+              : (_isMapOrientationEnabled
+                  ? 'Disable Map Orientation'
                   : 'Enable Map Orientation'),
         ),
-        
+
         SizedBox(height: 12),
-        
-        // Manual Recording Button (EXISTING - keep as is)
+
+        // Manual Recording Button
         FloatingActionButton(
           heroTag: "manual_record",
           onPressed: _recordMagneticReading,
@@ -1415,34 +1452,19 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
           child: Icon(Icons.add_location, color: Colors.white),
           tooltip: 'Record Point',
         ),
-        
+
         SizedBox(height: 12),
-        
-        // Auto Recording Toggle Button (EXISTING - keep as is)
+
+        // Auto Recording Toggle Button
         FloatingActionButton(
-          heroTag: "auto_record", 
+          heroTag: "auto_record",
           onPressed: _toggleAutomaticCollection,
           backgroundColor: _isCollecting ? Colors.red : Colors.blue,
           child: Icon(
-            _isCollecting ? Icons.stop : Icons.play_arrow, 
-            color: Colors.white
+            _isCollecting ? Icons.stop : Icons.play_arrow,
+            color: Colors.white,
           ),
           tooltip: _isCollecting ? 'Stop Auto Recording' : 'Start Auto Recording',
-        ),
-        
-        SizedBox(height: 12),
-        
-        // Compass Toggle Button (EXISTING - keep as is)
-        FloatingActionButton.small(
-          heroTag: "compass_toggle",
-          onPressed: () => setState(() => _showCompass = !_showCompass),
-          backgroundColor: _showCompass ? Colors.purple : Colors.grey,
-          child: Icon(
-            _showCompass ? Icons.explore_off : Icons.compass_calibration, 
-            color: Colors.white,
-            size: 20,
-          ),
-          tooltip: _showCompass ? 'Hide Compass' : 'Show Compass',
         ),
       ],
     );
@@ -1454,94 +1476,192 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => Container(
-        padding: EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('Survey Settings', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-            SizedBox(height: 20),
-            
-            // Navigation Settings Section
-            ListTile(
-              leading: Icon(Icons.navigation),
-              title: Text('Navigation Mode'),
-              subtitle: Text(_rotateIconWithMap ? 'Icon Rotation' : 'Map Rotation'),
-              trailing: Switch(
-                value: !_rotateIconWithMap,
-                onChanged: (value) => _toggleNavigationMode(),
+      backgroundColor: Colors.transparent,
+      builder: (context) => SafeArea(
+        child: DraggableScrollableSheet(
+          initialChildSize: 0.85,
+          minChildSize: 0.5,
+          maxChildSize: 0.95,
+          builder: (context, scrollController) {
+            return Container(
+              decoration: BoxDecoration(
+                color: Theme.of(context).cardColor,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+                boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 10)],
               ),
-            ),
-            
-            ListTile(
-              leading: Icon(Icons.auto_fix_high),
-              title: Text('Heading Correction'),
-              subtitle: Text(_useStackOverflowFix ? 'StackOverflow Fix Applied' : 'Raw Compass Data'),
-              trailing: Switch(
-                value: _useStackOverflowFix,
-                onChanged: (value) => _toggleStackOverflowFix(),
-              ),
-            ),
-            
-            Divider(),
-            
-            // Map Settings
-            ListTile(
-              leading: Icon(Icons.map),
-              title: Text('Base Layer'),
-              subtitle: Text(_getMapLayerName()),
-              onTap: _showMapLayerDialog,
-            ),
-            
-            ListTile(
-              leading: Icon(Icons.grid_on),
-              title: Text('Show Grid'),
-              trailing: Switch(
-                value: _showGrid,
-                onChanged: (value) => setState(() => _showGrid = value),
-              ),
-            ),
-            
-            // Data Collection Settings
-            ListTile(
-              leading: Icon(Icons.timer),
-              title: Text('Collection Interval'),
-              subtitle: Text('${_magneticPullRate.inSeconds}s'),
-              onTap: _showIntervalDialog,
-            ),
-            
-            SizedBox(height: 20),
-            
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: _showCalibrationDialog,
-                    icon: Icon(Icons.settings_input_component),
-                    label: Text('Calibrate Sensors'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: (_isMagneticCalibrated && _isGpsCalibrated) 
-                          ? Colors.green 
-                          : Colors.orange,
-                      foregroundColor: Colors.white,
+              child: ListView(
+                controller: scrollController,
+                padding: EdgeInsets.fromLTRB(16, 12, 16, 16),
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      margin: EdgeInsets.only(bottom: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.black26,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
                     ),
                   ),
-                ),
-                SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: _exportSurveyData,
-                    icon: Icon(Icons.download),
-                    label: Text('Export Data'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blue,
-                      foregroundColor: Colors.white,
+                  Text('Survey Settings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  SizedBox(height: 12),
+
+                  // Navigation
+                  Text('Navigation', style: TextStyle(fontSize: 12, color: Colors.black54)),
+                  Card(
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.black12)),
+                    child: Column(
+                      children: [
+                        ListTile(
+                          leading: Icon(Icons.navigation),
+                          title: Text('Navigation Mode'),
+                          subtitle: Text(_rotateIconWithMap ? 'Icon Rotation' : 'Map Rotation'),
+                          trailing: ToggleButtons(
+                            isSelected: [_rotateIconWithMap, !_rotateIconWithMap],
+                            onPressed: (index) {
+                              final wantMapMode = index == 1;
+                              if (wantMapMode != !_rotateIconWithMap) {
+                                _toggleNavigationMode();
+                              }
+                            },
+                            constraints: BoxConstraints(minHeight: 36, minWidth: 40),
+                            children: [
+                              Padding(
+                                padding: EdgeInsets.symmetric(horizontal: 8),
+                                child: Icon(Icons.screen_rotation),
+                              ),
+                              Padding(
+                                padding: EdgeInsets.symmetric(horizontal: 8),
+                                child: Icon(Icons.map),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Divider(height: 0),
+                        ListTile(
+                          leading: Icon(Icons.auto_fix_high),
+                          title: Text('Heading Correction'),
+                          subtitle: Text(_useStackOverflowFix ? 'StackOverflow Fix Applied' : 'Raw Compass Data'),
+                          trailing: Switch(
+                            value: _useStackOverflowFix,
+                            onChanged: (value) => _toggleStackOverflowFix(),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ),
-              ],
-            ),
-          ],
+
+                  SizedBox(height: 12),
+                  Text('Map', style: TextStyle(fontSize: 12, color: Colors.black54)),
+                  Card(
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.black12)),
+                    child: Column(
+                      children: [
+                        ListTile(
+                          leading: Icon(Icons.map),
+                          title: Text('Base Layer'),
+                          subtitle: Text(_getMapLayerName()),
+                          onTap: _showMapLayerDialog,
+                          trailing: DropdownButton<MapBaseLayer>(
+                            value: _currentBaseLayer,
+                            underline: SizedBox.shrink(),
+                            onChanged: (value) {
+                              if (value == null) return;
+                              setState(() => _currentBaseLayer = value);
+                            },
+                            items: MapBaseLayer.values.map((layer) => DropdownMenuItem(
+                              value: layer,
+                              child: Text(_getLayerDisplayName(layer)),
+                            )).toList(),
+                          ),
+                        ),
+                        Divider(height: 0),
+                        ListTile(
+                          leading: Icon(Icons.grid_on),
+                          title: Text('Show Grid'),
+                          trailing: Switch(
+                            value: _showGrid,
+                            onChanged: (value) => setState(() => _showGrid = value),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  SizedBox(height: 12),
+                  Text('Data Collection', style: TextStyle(fontSize: 12, color: Colors.black54)),
+                  Card(
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.black12)),
+                    child: Column(
+                      children: [
+                        ListTile(
+                          leading: Icon(Icons.timer),
+                          title: Text('Collection Interval'),
+                          trailing: DropdownButton<int>(
+                            value: _magneticPullRate.inSeconds,
+                            underline: SizedBox.shrink(),
+                            onChanged: (value) {
+                              if (value == null) return;
+                              setState(() => _magneticPullRate = Duration(seconds: value));
+                            },
+                            items: [1,2,5,10].map((s) => DropdownMenuItem(value: s, child: Text('${s}s'))).toList(),
+                          ),
+                          onTap: _showIntervalDialog, // still available
+                        ),
+                        Divider(height: 0),
+                        ListTile(
+                          leading: Icon(Icons.touch_app),
+                          title: Text('Tap Map To Record'),
+                          subtitle: Text(_tapToRecordEnabled ? 'Enabled' : 'Disabled'),
+                          trailing: Switch(
+                            value: _tapToRecordEnabled,
+                            onChanged: (value) => setState(() => _tapToRecordEnabled = value),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _showCalibrationDialog,
+                          icon: Icon(Icons.settings_input_component),
+                          label: Text('Calibrate Sensors'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: (_isMagneticCalibrated && _isGpsCalibrated) ? Colors.green : Colors.orange,
+                            foregroundColor: Colors.white,
+                            minimumSize: Size.fromHeight(44),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                        ),
+                      ),
+                      SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _exportSurveyData,
+                          icon: Icon(Icons.download),
+                          label: Text('Export Data'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue,
+                            foregroundColor: Colors.white,
+                            minimumSize: Size.fromHeight(44),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
         ),
       ),
     );
@@ -1694,10 +1814,8 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
             children: [
               Text('Navigation Controls:', style: TextStyle(fontWeight: FontWeight.bold)),
               SizedBox(height: 8),
-              Text('• Green rotation button: Icon rotates, map stays north-up'),
-              Text('• Purple map button: Map rotates, icon points up (navigation mode)'),
-              Text('• Teal fix button: Toggle heading correction'),
-              Text('• Purple explore button: Enable map auto-rotation'),
+              Text('• Use Settings to choose Icon vs Map rotation'),
+              Text('• Map button: Enable/disable map auto-rotation'),
               SizedBox(height: 16),
               
               Text('Getting Started:', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -1712,7 +1830,7 @@ class _SurveyScreenState extends State<SurveyScreen> with TickerProviderStateMix
               SizedBox(height: 8),
               Text('• Green FAB: Record single point'),
               Text('• Blue FAB: Start/stop automatic recording'),
-              Text('• Purple FAB: Toggle compass display'),
+              Text('• Enable "Tap Map To Record" in Settings if desired'),
               SizedBox(height: 16),
               
               Text('Map Controls:', style: TextStyle(fontWeight: FontWeight.bold)),
