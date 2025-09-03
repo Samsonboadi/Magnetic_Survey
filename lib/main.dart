@@ -36,7 +36,7 @@ Future<void> _requestPermissions() async {
   // Check if essential permissions are granted
   if (permissions[Permission.location] != PermissionStatus.granted &&
       permissions[Permission.locationWhenInUse] != PermissionStatus.granted) {
-    print('Location permission is required for this app');
+    print('Location permission is required for this app.');
   }
 }
 
